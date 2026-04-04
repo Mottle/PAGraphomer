@@ -1,0 +1,39 @@
+[workspace]
+authors = ["liar <yyxxyyzero@163.com>"]
+channels = ["conda-forge"]
+name = "GPS"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = "==3.13.1"
+rich = ">=14.0"
+black = ">=26.1.0,<27"
+# scikit-learn = "==1.7.2"
+wandb = ">=0.24.1,<0.25"
+yacs = ">=0.1.8,<0.2"
+opt_einsum = ">=3.4.0,<4"
+einops = ">=0.8.2,<0.9"
+
+[pypi-dependencies]
+# pytorch
+torch = { version = "==2.8", index = "https://download.pytorch.org/whl/cu129" }
+torchvision = { version = ">=0.23.0", index = "https://download.pytorch.org/whl/cu129" }
+
+pytorch-lightning = { version = ">=2.4.0" }
+torchmetrics = { version = ">=1.4.0" }
+performer-pytorch = { version = "*"}
+tensorboardx = { version = "*" }
+lightning = { version = "*"}
+
+# pyg dependencies
+torch_geometric = { version = ">=2.6.0" }
+pyg_lib = { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu129/pyg_lib-0.5.0%2Bpt28cu129-cp313-cp313-linux_x86_64.whl" }
+torch_cluster = { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu129/torch_cluster-1.6.3%2Bpt28cu129-cp313-cp313-linux_x86_64.whl" }
+torch_scatter = { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu129/torch_scatter-2.1.2%2Bpt28cu129-cp313-cp313-linux_x86_64.whl" }
+torch_sparse = { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu129/torch_sparse-0.6.18%2Bpt28cu129-cp313-cp313-linux_x86_64.whl" }
+torch_spline_conv = { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu129/torch_spline_conv-1.2.2%2Bpt28cu129-cp313-cp313-linux_x86_64.whl" }
+
+ogb = { version = "*"}
