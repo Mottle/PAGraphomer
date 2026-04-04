@@ -1,0 +1,90 @@
+out_dir: results
+metric_best: mae
+metric_agg: argmin
+wandb:
+  use: False
+dataset:
+  format: PyG-ZINC
+  name: subset
+  task: graph
+  task_type: regression
+  transductive: False
+  node_encoder: True
+  node_encoder_name: TypeDictNode+RWSE
+  node_encoder_num_types: 28
+  node_encoder_bn: False
+  edge_encoder: True
+  edge_encoder_name: TypeDictEdge
+  edge_encoder_num_types: 4
+  edge_encoder_bn: False
+posenc_RWSE:
+  enable: True
+  kernel:
+    times_func: range(1, 21)
+  model: Linear
+  dim_pe: 28
+  raw_norm_type: BatchNorm
+train:
+  mode: custom
+  batch_size: 32
+  eval_period: 1
+model:
+  type: PAGModel
+  loss_fun: l1
+  edge_decoding: dot
+  graph_pooling: add
+pag:
+  layers: 3
+  layer_defaults:
+    macro:
+      num_layers: 1
+      layer_type: None+Transformer
+      num_heads: 4
+      dropout: 0.0
+      attn_dropout: 0.5
+      layer_norm: False
+      batch_norm: True
+    local:
+      depth: 2
+      num_samples: 16
+      rw_length: 4
+      dropout: 0.0
+      binary: False
+    path_attention:
+      dropout: 0.0
+      temperature: 1.0
+      lambda_entropy: 0.0
+    fusion:
+      global_fuser: AFF
+      node_fuser: AFF
+  # Optional per-layer override. `index` is 0-based PAG layer id.
+  # Example below uses a different macro local-gnn at layer 1.
+  layer_overrides:
+    - index: 1
+      macro:
+        layer_type: GINE+Transformer
+        attn_dropout: 0.3
+      local:
+        num_samples: 24
+gt:
+  pna_degrees: []
+  bigbird:
+    attention_type: block_sparse
+gnn:
+  head: san_graph
+  layers_pre_mp: 0
+  layers_post_mp: 3
+  dim_inner: 64
+  batchnorm: True
+  act: relu
+  dropout: 0.0
+  agg: mean
+  normalize_adj: False
+optim:
+  clip_grad_norm: True
+  optimizer: adamW
+  weight_decay: 1e-5
+  base_lr: 0.001
+  max_epoch: 2000
+  scheduler: cosine_with_warmup
+  num_warmup_epochs: 50
