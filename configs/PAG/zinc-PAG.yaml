@@ -50,6 +50,7 @@ pag:
       rw_length: 4
       dropout: 0.0
       binary: False
+      act: relu
     path_attention:
       dropout: 0.0
       temperature: 1.0

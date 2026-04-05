@@ -29,6 +29,7 @@ def set_cfg_pag(cfg):
     cfg.pag.layer_defaults.local.rw_length = 4
     cfg.pag.layer_defaults.local.dropout = 0.0
     cfg.pag.layer_defaults.local.binary = False
+    cfg.pag.layer_defaults.local.act = "relu"
 
     cfg.pag.layer_defaults.path_attention = CN()
     cfg.pag.layer_defaults.path_attention.dropout = 0.0

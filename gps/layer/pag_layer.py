@@ -1,4 +1,5 @@
 import torch.nn as nn
+import torch_geometric.graphgym.register as register
 from torch_geometric.nn import global_mean_pool
 
 from gps.layer.gps_layer import GPSLayer
@@ -44,6 +45,7 @@ class PAGLayer(nn.Module):
         local_rw_length = int(local_cfg.get("rw_length", 4))
         local_dropout = float(local_cfg.get("dropout", 0.0))
         local_binary = bool(local_cfg.get("binary", False))
+        local_act = local_cfg.get("act", "relu")
 
         path_dropout = float(path_cfg.get("dropout", 0.0))
         path_temp = float(path_cfg.get("temperature", path_cfg.get("temp", 1.0)))
@@ -93,6 +95,7 @@ class PAGLayer(nn.Module):
             length=local_rw_length,
             dropout=local_dropout,
             binary=local_binary,
+            activation=register.act_dict[local_act](),
         )
 
         self.path_attention = PathAttention(
