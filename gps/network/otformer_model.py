@@ -1,0 +1,596 @@
+import torch
+import torch.nn as nn
+import torch_geometric.graphgym.register as register
+from torch_geometric.graphgym.config import cfg
+from torch_geometric.graphgym.models.gnn import GNNPreMP
+from torch_geometric.graphgym.register import register_network
+from torch_geometric.utils import to_dense_adj
+
+from gps.layer.otformer_layer import OTMotifMemory, OTFormerBlock, build_pair_init
+from gps.layer.rum.models import RUMModel
+from gps.network.gps_model import FeatureEncoder
+
+
+def _infer_atom_targets(raw_x):
+    if raw_x.dim() == 1:
+        return raw_x.long()
+    if raw_x.dim() == 2 and raw_x.size(1) == 1:
+        return raw_x.squeeze(-1).long()
+    if raw_x.dim() == 2:
+        return raw_x.argmax(dim=-1).long()
+    raise ValueError(
+        f"Unsupported raw node feature shape for atom targets: {raw_x.shape}"
+    )
+
+
+def _local_node_index(node_batch):
+    idx = torch.zeros_like(node_batch)
+    num_graphs = int(node_batch.max().item()) + 1 if node_batch.numel() > 0 else 0
+    for g in range(num_graphs):
+        nodes = (node_batch == g).nonzero(as_tuple=False).flatten()
+        idx[nodes] = torch.arange(nodes.numel(), device=node_batch.device)
+    return idx
+
+
+@register_network("OTFormerModel")
+class OTFormerModel(torch.nn.Module):
+    def __init__(self, dim_in, dim_out):
+        super().__init__()
+        self.encoder = FeatureEncoder(dim_in)
+        dim_in = self.encoder.dim_in
+
+        if cfg.gnn.layers_pre_mp > 0:
+            self.pre_mp = GNNPreMP(dim_in, cfg.gnn.dim_inner, cfg.gnn.layers_pre_mp)
+            dim_in = cfg.gnn.dim_inner
+        if cfg.gnn.dim_inner != dim_in:
+            raise ValueError(
+                f"The inner and hidden dims must match: dim_inner={cfg.gnn.dim_inner}, dim_in={dim_in}"
+            )
+
+        dim_h = cfg.gnn.dim_inner
+        self.dim_h = dim_h
+        self.recycling_iters = cfg.otformer.recycling_iters
+        self.detach_recycle = cfg.otformer.detach_recycle
+
+        self.rum = RUMModel(
+            in_features=dim_h,
+            out_features=dim_h,
+            hidden_features=dim_h,
+            edge_features=dim_h,
+            depth=cfg.otformer.rum.depth,
+            num_samples=cfg.otformer.rum.num_samples,
+            length=cfg.otformer.rum.rw_length,
+            dropout=cfg.otformer.rum.dropout,
+            binary=cfg.otformer.rum.binary,
+            self_supervise=False,
+        )
+        self.ot_memory = OTMotifMemory(dim_h, cfg.otformer.motif.memory_size)
+        self.motif_to_node = nn.Linear(dim_h, dim_h)
+        self.edge_proj = nn.Linear(dim_h, dim_h)
+
+        self.blocks = nn.ModuleList(
+            [
+                OTFormerBlock(
+                    dim_h=dim_h,
+                    num_heads=cfg.otformer.num_heads,
+                    dropout=cfg.otformer.dropout,
+                    attn_dropout=cfg.otformer.attn_dropout,
+                    layer_norm=cfg.otformer.layer_norm,
+                    use_triangle=cfg.otformer.pair.use_triangle,
+                    triangle_hidden=cfg.otformer.pair.triangle_hidden,
+                )
+                for _ in range(cfg.otformer.layers)
+            ]
+        )
+        self.h_recycle_norm = nn.LayerNorm(dim_h)
+        self.z_recycle_norm = nn.LayerNorm(dim_h)
+
+        atom_classes = getattr(cfg.dataset, "node_encoder_num_types", 64)
+        self.mask_token = nn.Parameter(torch.zeros(dim_h))
+        nn.init.normal_(self.mask_token, std=0.02)
+        self.atom_decoder = nn.Linear(dim_h, atom_classes)
+        self.motif_decoder = nn.Linear(dim_h, cfg.otformer.motif.memory_size)
+        self.edge_decoder = nn.Linear(dim_h, 1)
+
+        GNNHead = register.head_dict[cfg.gnn.head]
+        self.post_mp = GNNHead(dim_in=dim_h, dim_out=dim_out)
+
+    @staticmethod
+    def _connected_components_from_edges(active_local_idx, edge_src, edge_dst):
+        """Return connected components over `active_local_idx` using local edges."""
+        if active_local_idx.numel() == 0:
+            return []
+        if active_local_idx.numel() == 1 or edge_src.numel() == 0:
+            return [active_local_idx]
+
+        max_local = int(active_local_idx.max().item()) + 1
+        comp_map = torch.full(
+            (max_local,),
+            -1,
+            dtype=torch.long,
+            device=active_local_idx.device,
+        )
+        comp_map[active_local_idx] = torch.arange(
+            active_local_idx.numel(), device=active_local_idx.device
+        )
+        src = comp_map[edge_src]
+        dst = comp_map[edge_dst]
+        valid = (src >= 0) & (dst >= 0) & (src != dst)
+        src = src[valid]
+        dst = dst[valid]
+
+        n = int(active_local_idx.numel())
+        parent = list(range(n))
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a, b):
+            ra = find(a)
+            rb = find(b)
+            if ra != rb:
+                parent[rb] = ra
+
+        for a, b in zip(src.tolist(), dst.tolist()):
+            union(a, b)
+
+        groups = {}
+        for i in range(n):
+            r = find(i)
+            groups.setdefault(r, []).append(i)
+        return [
+            active_local_idx[
+                torch.tensor(members, device=active_local_idx.device, dtype=torch.long)
+            ]
+            for members in groups.values()
+        ]
+
+    def _sample_motif_block_mask(self, node_batch, edge_index, motif_id):
+        device = node_batch.device
+        n_nodes = node_batch.size(0)
+        mask = torch.zeros(n_nodes, dtype=torch.bool, device=device)
+        num_graphs = int(node_batch.max().item()) + 1 if n_nodes > 0 else 0
+
+        ratio = cfg.otformer.pretrain.motif_mask_ratio
+        if ratio <= 0:
+            return mask
+        topk = cfg.otformer.pretrain.motif_topk
+        for g in range(num_graphs):
+            nodes = (node_batch == g).nonzero(as_tuple=False).flatten()
+            if nodes.numel() == 0:
+                continue
+            local_idx = torch.full((n_nodes,), -1, device=device, dtype=torch.long)
+            local_idx[nodes] = torch.arange(nodes.numel(), device=device)
+            eids = (node_batch[edge_index[0]] == g).nonzero(as_tuple=False).flatten()
+            if eids.numel() > 0:
+                edge_src_local = local_idx[edge_index[0, eids]]
+                edge_dst_local = local_idx[edge_index[1, eids]]
+                valid_edges = (
+                    (edge_src_local >= 0)
+                    & (edge_dst_local >= 0)
+                    & (edge_src_local != edge_dst_local)
+                )
+                edge_src_local = edge_src_local[valid_edges]
+                edge_dst_local = edge_dst_local[valid_edges]
+            else:
+                edge_src_local = torch.empty(0, device=device, dtype=torch.long)
+                edge_dst_local = torch.empty(0, device=device, dtype=torch.long)
+            motif_g = motif_id[nodes]
+            uniq, cnt = torch.unique(motif_g, return_counts=True)
+            k = min(int(topk), uniq.numel())
+            if k == 0:
+                continue
+            top = uniq[torch.topk(cnt, k=k).indices]
+            for motif in top.tolist():
+                motif_local_idx = (motif_g == motif).nonzero(as_tuple=False).flatten()
+                if motif_local_idx.numel() == 0:
+                    continue
+                motif_edge_mask = (motif_g[edge_src_local] == motif) & (
+                    motif_g[edge_dst_local] == motif
+                )
+                comps = self._connected_components_from_edges(
+                    active_local_idx=motif_local_idx,
+                    edge_src=edge_src_local[motif_edge_mask],
+                    edge_dst=edge_dst_local[motif_edge_mask],
+                )
+                for comp_local in comps:
+                    if torch.rand(1, device=device).item() < ratio:
+                        mask[nodes[comp_local]] = True
+        return mask
+
+    def _perturb_edges(self, edge_index, edge_attr, node_batch):
+        ratio = cfg.otformer.pretrain.edge_perturb_ratio
+        if ratio <= 0:
+            return edge_index, edge_attr, None
+
+        device = edge_index.device
+        num_edges = edge_index.size(1)
+        if num_edges == 0:
+            return edge_index, edge_attr, None
+
+        local_idx = _local_node_index(node_batch)
+        num_graphs = int(node_batch.max().item()) + 1 if node_batch.numel() > 0 else 0
+        edge_graph = node_batch[edge_index[0]]
+        keep = torch.ones(num_edges, dtype=torch.bool, device=device)
+
+        perturb_b = []
+        perturb_i = []
+        perturb_j = []
+        perturb_y = []
+        dropped_pairs_per_graph = {}
+
+        # Drop edges per-graph.
+        for g in range(num_graphs):
+            eids = (edge_graph == g).nonzero(as_tuple=False).flatten()
+            if eids.numel() == 0:
+                continue
+            pair_to_eids = {}
+            for eid in eids.tolist():
+                s = int(edge_index[0, eid].item())
+                d = int(edge_index[1, eid].item())
+                key = (s, d) if s <= d else (d, s)
+                pair_to_eids.setdefault(key, []).append(eid)
+            pairs = list(pair_to_eids.keys())
+            n_drop = int(len(pairs) * ratio)
+            if n_drop <= 0 and ratio > 0:
+                n_drop = 1
+            n_drop = min(n_drop, len(pairs))
+            if n_drop <= 0 or len(pairs) == 0:
+                continue
+            drop_ids = torch.randperm(len(pairs), device=device)[:n_drop].tolist()
+            dropped_pairs_per_graph[g] = n_drop
+            for pid in drop_ids:
+                s, d = pairs[pid]
+                for eid in pair_to_eids[(s, d)]:
+                    keep[eid] = False
+                li = int(local_idx[s].item())
+                lj = int(local_idx[d].item())
+                if s == d:
+                    perturb_b.append(torch.tensor([g], device=device, dtype=torch.long))
+                    perturb_i.append(
+                        torch.tensor([li], device=device, dtype=torch.long)
+                    )
+                    perturb_j.append(
+                        torch.tensor([lj], device=device, dtype=torch.long)
+                    )
+                    perturb_y.append(torch.ones(1, device=device, dtype=torch.float))
+                else:
+                    perturb_b.append(
+                        torch.tensor([g, g], device=device, dtype=torch.long)
+                    )
+                    perturb_i.append(
+                        torch.tensor([li, lj], device=device, dtype=torch.long)
+                    )
+                    perturb_j.append(
+                        torch.tensor([lj, li], device=device, dtype=torch.long)
+                    )
+                    perturb_y.append(torch.ones(2, device=device, dtype=torch.float))
+
+        edge_keep = edge_index[:, keep]
+        attr_keep = edge_attr[keep] if edge_attr is not None else None
+
+        # Add random fake edges to match number of dropped edges in each graph.
+        add_src = []
+        add_dst = []
+        add_attr = []
+        if edge_attr is not None:
+            zero_attr = torch.zeros(
+                edge_attr.size(1), device=device, dtype=edge_attr.dtype
+            )
+        for g in range(num_graphs):
+            nodes = (node_batch == g).nonzero(as_tuple=False).flatten()
+            if nodes.numel() < 2:
+                continue
+            base_add = dropped_pairs_per_graph.get(g, 0)
+            target_add = int(base_add * cfg.otformer.pretrain.edge_neg_ratio)
+            if (
+                target_add <= 0
+                and base_add > 0
+                and cfg.otformer.pretrain.edge_neg_ratio > 0
+            ):
+                target_add = 1
+            if target_add == 0:
+                continue
+
+            eids_true = (edge_graph == g).nonzero(as_tuple=False).flatten()
+            true_existing = set()
+            for eid in eids_true.tolist():
+                s = int(edge_index[0, eid].item())
+                d = int(edge_index[1, eid].item())
+                true_existing.add((s, d) if s <= d else (d, s))
+
+            keep_graph = edge_graph[keep]
+            eids_keep = (keep_graph == g).nonzero(as_tuple=False).flatten()
+            existing = set()
+            for eid in eids_keep.tolist():
+                s = int(edge_keep[0, eid].item())
+                d = int(edge_keep[1, eid].item())
+                existing.add((s, d) if s <= d else (d, s))
+
+            added = 0
+            attempts = 0
+            max_attempts = target_add * 20
+            while added < target_add and attempts < max_attempts:
+                attempts += 1
+                s = nodes[torch.randint(0, nodes.numel(), (1,), device=device)].item()
+                d = nodes[torch.randint(0, nodes.numel(), (1,), device=device)].item()
+                if s == d:
+                    continue
+                key = (s, d) if s <= d else (d, s)
+                if key in existing or key in true_existing:
+                    continue
+                existing.add(key)
+                add_src.extend([s, d])
+                add_dst.extend([d, s])
+                if edge_attr is not None:
+                    add_attr.append(zero_attr.clone())
+                    add_attr.append(zero_attr.clone())
+                li = int(local_idx[s].item())
+                lj = int(local_idx[d].item())
+                perturb_b.append(torch.tensor([g, g], device=device, dtype=torch.long))
+                perturb_i.append(
+                    torch.tensor([li, lj], device=device, dtype=torch.long)
+                )
+                perturb_j.append(
+                    torch.tensor([lj, li], device=device, dtype=torch.long)
+                )
+                perturb_y.append(torch.zeros(2, device=device, dtype=torch.float))
+                added += 1
+
+        if add_src:
+            add_e = torch.tensor(
+                [add_src, add_dst], device=device, dtype=edge_index.dtype
+            )
+            edge_corrupt = torch.cat([edge_keep, add_e], dim=1)
+            if edge_attr is not None:
+                add_attr_t = torch.stack(add_attr, dim=0)
+                attr_corrupt = torch.cat([attr_keep, add_attr_t], dim=0)
+            else:
+                attr_corrupt = None
+        else:
+            edge_corrupt = edge_keep
+            attr_corrupt = attr_keep
+
+        if perturb_b:
+            pairs = {
+                "b": torch.cat(perturb_b),
+                "i": torch.cat(perturb_i),
+                "j": torch.cat(perturb_j),
+                "y": torch.cat(perturb_y),
+            }
+        else:
+            pairs = None
+        return edge_corrupt, attr_corrupt, pairs
+
+    def _compute_pretrain_losses(
+        self,
+        batch,
+        h_out,
+        z_out,
+        node_mask,
+        transport,
+        cost,
+        atom_mask,
+        motif_block_mask,
+        motif_id,
+        true_adj_dense,
+        perturbed_pairs,
+    ):
+        losses = {}
+        device = h_out.device
+
+        raw_x = getattr(batch, "x_raw", None)
+        if raw_x is None:
+            losses["mask_atom"] = torch.tensor(0.0, device=device)
+        else:
+            target_atom = _infer_atom_targets(raw_x).to(device)
+            atom_logits = self.atom_decoder(h_out)
+            if atom_mask.any():
+                losses["mask_atom"] = nn.CrossEntropyLoss()(
+                    atom_logits[atom_mask], target_atom[atom_mask]
+                )
+            else:
+                losses["mask_atom"] = torch.tensor(0.0, device=device)
+
+        motif_logits = self.motif_decoder(h_out)
+        if motif_block_mask.any():
+            losses["motif_mask"] = nn.CrossEntropyLoss()(
+                motif_logits[motif_block_mask], motif_id[motif_block_mask]
+            )
+        else:
+            losses["motif_mask"] = torch.tensor(0.0, device=device)
+
+        edge_logit_dense = self.edge_decoder(z_out).squeeze(-1)
+        true_adj_dense = ((true_adj_dense + true_adj_dense.transpose(1, 2)) > 0).float()
+        if perturbed_pairs is not None and perturbed_pairs["y"].numel() > 0:
+            pred_edge = edge_logit_dense[
+                perturbed_pairs["b"], perturbed_pairs["i"], perturbed_pairs["j"]
+            ]
+            # Follow the original OTFormer denoising intent:
+            # predict whether a pair is a true bond in the clean graph.
+            true_edge = true_adj_dense[
+                perturbed_pairs["b"], perturbed_pairs["i"], perturbed_pairs["j"]
+            ]
+            losses["edge_denoise"] = nn.BCEWithLogitsLoss()(pred_edge, true_edge)
+        else:
+            pair_mask = node_mask.unsqueeze(1) & node_mask.unsqueeze(2)
+            non_diag = ~torch.eye(
+                pair_mask.shape[-1], dtype=torch.bool, device=pair_mask.device
+            ).unsqueeze(0)
+            pair_mask = pair_mask & non_diag
+            valid_idx = pair_mask.nonzero(as_tuple=False)
+            if valid_idx.shape[0] > 0:
+                num_samples = max(
+                    1, int(valid_idx.shape[0] * cfg.otformer.pretrain.edge_sample_ratio)
+                )
+                perm = torch.randperm(valid_idx.shape[0], device=device)[:num_samples]
+                sampled = valid_idx[perm]
+                pred_edge = edge_logit_dense[
+                    sampled[:, 0], sampled[:, 1], sampled[:, 2]
+                ]
+                true_edge = true_adj_dense[
+                    sampled[:, 0], sampled[:, 1], sampled[:, 2]
+                ].float()
+                losses["edge_denoise"] = nn.BCEWithLogitsLoss()(pred_edge, true_edge)
+            else:
+                losses["edge_denoise"] = torch.tensor(0.0, device=device)
+
+        losses["ot_prior"] = (transport * cost).sum(dim=(1, 2)).mean()
+        return losses
+
+    def _losses_by_mode(self, losses):
+        mode = cfg.otformer.pretrain.mode
+        if mode == "joint":
+            return losses
+        if mode == "atom_only":
+            return {
+                "mask_atom": losses["mask_atom"],
+                "motif_mask": torch.zeros_like(losses["motif_mask"]),
+                "edge_denoise": torch.zeros_like(losses["edge_denoise"]),
+                "ot_prior": torch.zeros_like(losses["ot_prior"]),
+            }
+        if mode == "motif_only":
+            return {
+                "mask_atom": torch.zeros_like(losses["mask_atom"]),
+                "motif_mask": losses["motif_mask"],
+                "edge_denoise": torch.zeros_like(losses["edge_denoise"]),
+                "ot_prior": torch.zeros_like(losses["ot_prior"]),
+            }
+        if mode == "edge_only":
+            return {
+                "mask_atom": torch.zeros_like(losses["mask_atom"]),
+                "motif_mask": torch.zeros_like(losses["motif_mask"]),
+                "edge_denoise": losses["edge_denoise"],
+                "ot_prior": torch.zeros_like(losses["ot_prior"]),
+            }
+        if mode == "no_ot":
+            return {
+                "mask_atom": losses["mask_atom"],
+                "motif_mask": losses["motif_mask"],
+                "edge_denoise": losses["edge_denoise"],
+                "ot_prior": torch.zeros_like(losses["ot_prior"]),
+            }
+        raise ValueError(
+            f"Unsupported otformer.pretrain.mode='{mode}'. "
+            "Choose one of: joint, atom_only, motif_only, edge_only, no_ot."
+        )
+
+    def forward(self, batch):
+        batch.x_raw = batch.x.clone()
+        batch = self.encoder(batch)
+        if hasattr(self, "pre_mp"):
+            batch = self.pre_mp(batch)
+
+        # Preserve clean graph for denoising targets.
+        edge_index_true = batch.edge_index
+        edge_attr_true = getattr(batch, "edge_attr", None)
+        node_batch = batch.batch
+        h_encoded = batch.x
+
+        # Optional input edge perturbation for denoising pretraining.
+        perturb_pairs = None
+        edge_index_work = edge_index_true
+        edge_attr_work = edge_attr_true
+        pretrain_on = getattr(cfg.otformer.pretrain, "enable", False) and self.training
+        if pretrain_on:
+            edge_index_work, edge_attr_work, perturb_pairs = self._perturb_edges(
+                edge_index_true, edge_attr_true, node_batch
+            )
+
+        # Use perturbed graph for path extraction and OT matching.
+        batch_work = batch.clone()
+        batch_work.edge_index = edge_index_work
+        if edge_attr_true is not None:
+            batch_work.edge_attr = edge_attr_work
+
+        path_repr, _ = self.rum(
+            batch_work, h_encoded, e=getattr(batch_work, "edge_attr", None)
+        )
+        if path_repr.dim() != 3:
+            raise RuntimeError(
+                f"Expected 3D path tensor from RUM, got shape {path_repr.shape}"
+            )
+        # RUM returns [W, N, D]
+        path_repr = path_repr.transpose(0, 1).contiguous()
+
+        node_motif, transport, cost = self.ot_memory(
+            path_repr,
+            sinkhorn_eps=cfg.otformer.motif.sinkhorn_eps,
+            sinkhorn_iters=cfg.otformer.motif.sinkhorn_iters,
+            log_domain=cfg.otformer.motif.log_domain,
+        )
+        motif_id = transport.mean(dim=1).argmax(dim=-1)
+
+        # Build pretraining masks: atom random mask + motif-connected block mask.
+        atom_mask = torch.zeros(
+            h_encoded.size(0), dtype=torch.bool, device=h_encoded.device
+        )
+        motif_block_mask = torch.zeros_like(atom_mask)
+        h_input = h_encoded
+        if pretrain_on:
+            atom_mask = (
+                torch.rand(h_encoded.shape[0], device=h_encoded.device)
+                < cfg.otformer.pretrain.atom_mask_ratio
+            )
+            motif_block_mask = self._sample_motif_block_mask(
+                node_batch=node_batch,
+                edge_index=edge_index_true,
+                motif_id=motif_id,
+            )
+            mask_union = atom_mask | motif_block_mask
+            h_input = h_encoded.clone()
+            h_input[mask_union] = self.mask_token
+
+        h0 = h_input + self.motif_to_node(node_motif)
+
+        batch_work.x = h0
+        z0, h_dense0, node_mask = build_pair_init(
+            batch_work, self.dim_h, self.edge_proj
+        )
+        h, z = h_dense0, z0
+        for t in range(self.recycling_iters):
+            if t > 0:
+                h_prev = self.h_recycle_norm(h)
+                z_prev = self.z_recycle_norm(z)
+                if self.detach_recycle:
+                    h_prev = h_prev.detach()
+                    z_prev = z_prev.detach()
+                h = h_prev + h_dense0
+                z = z_prev + z0
+            for block in self.blocks:
+                h, z = block(h, z, node_mask)
+
+        h_out = h[node_mask]
+        batch.x = h_out
+        batch.otformer_aux = {
+            "transport": transport,
+            "cost": cost,
+            "atom_mask": atom_mask,
+            "motif_block_mask": motif_block_mask,
+        }
+        if getattr(cfg.otformer.pretrain, "enable", False):
+            true_adj = to_dense_adj(
+                edge_index_true,
+                batch=node_batch,
+                max_num_nodes=node_mask.shape[1],
+            ).to(h_out.device)
+            losses = self._compute_pretrain_losses(
+                batch=batch,
+                h_out=h_out,
+                z_out=z,
+                node_mask=node_mask,
+                transport=transport,
+                cost=cost,
+                atom_mask=atom_mask,
+                motif_block_mask=motif_block_mask,
+                motif_id=motif_id,
+                true_adj_dense=true_adj,
+                perturbed_pairs=perturb_pairs,
+            )
+            batch.otformer_aux["losses_raw"] = losses
+            batch.otformer_aux["losses"] = self._losses_by_mode(losses)
+
+        return self.post_mp(batch)

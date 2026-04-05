@@ -3,7 +3,7 @@ from functools import partial
 import torch
 import torch.nn as nn
 from torch_geometric.graphgym.config import cfg
-from torch_geometric.graphgym.register import register_act
+from torch_geometric.graphgym.register import act_dict, register_act
 
 
 class SWISH(nn.Module):
@@ -19,12 +19,14 @@ class SWISH(nn.Module):
             return x * torch.sigmoid(x)
 
 
-register_act("swish", partial(SWISH, inplace=cfg.mem.inplace))
-register_act("lrelu_03", partial(nn.LeakyReLU, 0.3, inplace=cfg.mem.inplace))
+def _safe_register_act(name, module):
+    if name not in act_dict:
+        register_act(name, module)
 
-# Add Gaussian Error Linear Unit (GELU).
-register_act("gelu", nn.GELU)
 
-# Add ELU and standard LeakyReLU.
-register_act("elu", partial(nn.ELU, inplace=cfg.mem.inplace))
-register_act("leaky_relu", partial(nn.LeakyReLU, 0.01, inplace=cfg.mem.inplace))
+_safe_register_act("swish", partial(SWISH, inplace=cfg.mem.inplace))
+_safe_register_act("lrelu_03", partial(nn.LeakyReLU, 0.3, inplace=cfg.mem.inplace))
+_safe_register_act("gelu", nn.GELU)
+_safe_register_act("elu", partial(nn.ELU, inplace=cfg.mem.inplace))
+_safe_register_act("leakyrelu", partial(nn.LeakyReLU, 0.01, inplace=cfg.mem.inplace))
+_safe_register_act("leaky_relu", partial(nn.LeakyReLU, 0.01, inplace=cfg.mem.inplace))

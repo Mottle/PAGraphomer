@@ -1,0 +1,124 @@
+# OTFormer pretraining config on ZINC (PyG-ZINC subset).
+# This config is for stage-3 style joint self-supervised pretraining.
+out_dir: results
+metric_best: loss
+metric_agg: argmin
+wandb:
+  use: False
+dataset:
+  # ZINC subset: graph-level regression benchmark.
+  format: PyG-ZINC
+  name: subset
+  task: graph
+  task_type: regression
+  transductive: False
+  # Node/edge encoders follow existing GraphGPS conventions.
+  node_encoder: True
+  node_encoder_name: TypeDictNode+RWSE
+  node_encoder_num_types: 28
+  node_encoder_bn: False
+  edge_encoder: True
+  edge_encoder_name: TypeDictEdge
+  edge_encoder_num_types: 4
+  edge_encoder_bn: False
+posenc_RWSE:
+  # Random Walk Structural Encoding.
+  enable: True
+  kernel:
+    times_func: range(1, 21)
+  model: Linear
+  dim_pe: 28
+  raw_norm_type: BatchNorm
+train:
+  # Custom pretraining loop registered in gps/train/otformer_pretrain.py
+  mode: otformer_pretrain
+  batch_size: 16
+  eval_period: 1
+model:
+  # OTFormer network registered in gps/network/otformer_model.py
+  type: OTFormerModel
+  loss_fun: l1
+  edge_decoding: dot
+  graph_pooling: add
+otformer:
+  # Dual-track OTFormer backbone.
+  layers: 6
+  num_heads: 4
+  dropout: 0.15
+  attn_dropout: 0.2
+  layer_norm: True
+  # Recycling steps (AlphaFold-style iterative refinement).
+  recycling_iters: 2
+  # If True, stop gradients through recycled states.
+  detach_recycle: True
+  rum:
+    # RUM path encoder used for local walk features.
+    depth: 2
+    num_samples: 8
+    rw_length: 4
+    dropout: 0.0
+    binary: False
+  motif:
+    # Global motif memory + Sinkhorn OT matching.
+    memory_size: 64
+    # OT entropy regularization epsilon.
+    sinkhorn_eps: 0.1
+    # Sinkhorn iterations per forward.
+    sinkhorn_iters: 5
+    # Use log-domain Sinkhorn for numerical stability.
+    log_domain: True
+  pair:
+    # 2D pair track updates.
+    use_triangle: True
+    triangle_hidden: 32
+  pretrain:
+    # Enable OTFormer joint pretraining losses.
+    enable: True
+    # For pure SSL pretraining on ZINC, skip val/test loops.
+    eval_splits: False
+    # Save model weights after each epoch and keep only latest N snapshots.
+    save_epoch_weights: True
+    keep_last_epoch_weights: 3
+    # Masked atom modeling ratio.
+    atom_mask_ratio: 0.2
+    # Motif-block masking ratio (component-level blocks).
+    motif_mask_ratio: 0.1
+    # Top-k frequent motif ids per graph considered for block masking.
+    motif_topk: 8
+    # Edge corruption ratio for denoising objective.
+    edge_perturb_ratio: 0.2
+    # Fallback pair sampling ratio when perturb pairs are unavailable.
+    edge_sample_ratio: 0.1
+    # Number of sampled negative undirected pairs per dropped pair.
+    edge_neg_ratio: 2.0
+    # Loss weights for joint objective:
+    # L = w_mask_atom*L_mask_atom + w_motif_mask*L_motif_mask
+    #   + w_edge_denoise*L_edge_denoise + w_ot_prior*L_ot_prior
+    w_mask_atom: 1.0
+    w_motif_mask: 0.35
+    w_edge_denoise: 1.0
+    w_ot_prior: 1.0
+gt:
+  pna_degrees: []
+  bigbird:
+    attention_type: block_sparse
+gnn:
+  # GraphGPS head / hidden size settings.
+  head: san_graph
+  layers_pre_mp: 0
+  layers_post_mp: 3
+  dim_inner: 128
+  batchnorm: True
+  act: relu
+  dropout: 0.1
+  agg: mean
+  normalize_adj: False
+optim:
+  # Optimizer and LR schedule.
+  clip_grad_norm: True
+  optimizer: adamW
+  weight_decay: 5e-5
+  base_lr: 0.0005
+  max_epoch: 300
+  scheduler: cosine_with_warmup
+  num_warmup_epochs: 25

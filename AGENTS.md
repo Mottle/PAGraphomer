@@ -1,48 +1,158 @@
-# Agent Guidelines for GPS Repository
+# GPS Repository - Agent Guidelines
 
-This file provides guidelines for AI coding agents working in this repository.
+**Generated:** 2026-04-04  
+**Commit:** unknown (HEAD)  
+**Branch:** unknown
 
-## Project Overview
+## OVERVIEW
 
-GPS (Graph Positional Encoding with Self-Attention) is a Graph Neural Network framework built on PyTorch Geometric. It implements various positional encodings (RWSE, LapPE, etc.) combined with transformer-style attention for graph representation learning.
+GPS (Graph Positional Encoding with Self-Attention) is a PyTorch Geometric-based GNN framework implementing multiple positional encodings (RWSE, LapPE, EquivStableLapPE, SignNet) with transformer-style attention for graph representation learning.
 
-## Build & Run Commands
+**Core Stack**: PyTorch + PyTorch Geometric + GraphGym + pixi (not conda/pip)
 
-### Environment Setup
+**Key Models**: GPS, PAG, OTFormer, SAN, GatedGCN, GINE, Graphormer
 
-```bash
-# Install dependencies with pixi
-pixi install
+## STRUCTURE
 
-# Activate environment
-pixi shell
+```
+./
+├── main.py                 # Entry point (GraphGym extension)
+├── gps/                    # Main package (modular, auto-imports)
+├── configs/                # YAML configs by model type (GPS, SAN, PAG, OTFormer, etc.)
+├── run/                    # SLURM batch scripts (HPC-focused)
+├── tests/                  # Integration tests + configs
+├── unittests/              # Unit tests (unittest framework)
+├── datasets/               # Local dataset storage (raw + processed)
+└── results/                # Experiment outputs
 ```
 
-### Running Experiments
+## WHERE TO LOOK
+
+| Task | Location | Notes |
+|------|----------|-------|
+| **Train model** | `main.py` | Extends `torch_geometric.graphgym` |
+| **Model architecture** | `gps/network/` | Uses `@register_network` decorators |
+| **GNN layers** | `gps/layer/` | GPSLayer, PAGLayer, RUM, OTFormerLayer, etc. |
+| **Data loading** | `gps/loader/` | Master loader with 15+ dataset formats |
+| **Positional encodings** | `gps/encoder/`, `gps/transform/posenc_stats.py` | RWSE, LapPE, SignNet, etc. |
+| **Configs** | `configs/{model_type}/` | Organized by architecture (GPS/, SAN/, PAG/, OTFormer/, etc.) |
+| **Training loops** | `gps/train/custom_train.py` | 5 registered trainers via `@register_train` |
+| **OTFormer pretraining** | `gps/train/otformer_pretrain.py` | Custom pretraining loop for OTFormer |
+| **Utilities** | `gps/utils.py` | Core utilities (negate_edge_index, flatten_dict, etc.) |
+| **Testing** | `unittests/` | Uses unittest (not pytest) |
+
+## CONVENTIONS (Deviations from Standard)
+
+**1. Dual Test Directories**
+- `tests/` = Integration tests + shell scripts
+- `unittests/` = Unit tests (uses unittest framework)
+二次元构造: 大多数项目只有一个test目录
+
+**2. Config Organization by Model Type**
+- Standard: Group by dataset/task (zinc/, ogbg-molhiv/)
+- This project: Group by architecture (GPS/, SAN/, PAG/, OTFormer/, GatedGCN/, Graphormer/, GINE/)
+
+**3. Layer Subdirectory Pattern**
+- `gps/layer/` has flat files + nested subdirs (`rum/`, `pag/`)
+- RUM submodule has empty `__init__.py` (standalone import pattern)
+- PAG submodule lacks `__init__.py` (implicit namespace package)
+
+**4. Example Files Everywhere**
+- Each submodule has `example.py` (e.g., `gps/layer/example.py`, `gps/network/example.py`)
+- Unusual pattern - most projects centralize examples
+
+**5. Pixi for Environment Management**
+- Uses `pixi.toml` instead of conda/pip/poetry
+- No `setup.py`, `pyproject.toml`, or `requirements.txt`
+
+**6. GraphGym Extension Pattern**
+- Imports from `torch_geometric.graphgym.*`
+- Uses `@register_*` decorators extensively
+- Custom training modes via `cfg.train.mode`
+
+**7. Module Auto-Discovery**
+- All subpackages use glob pattern in `__init__.py`:
+  ```python
+  modules = glob.glob(join(dirname(__file__), "*.py"))
+  __all__ = [basename(f)[:-3] for f in modules if isfile(f) and not f.endswith("__init__.py")]
+  ```
+- New files automatically imported without modifying `__init__.py`
+
+## ANTI-PATTERNS (THIS PROJECT)
+
+**DO NOT:**
+- Use `X | None` type hints - use `Optional[X]` (Python 3.13 compatibility)
+- Add `__init__.py` to `gps/layer/pag/` (relies on implicit namespace package)
+- Export from `gps/layer/rum/__init__.py` (intentionally empty)
+- Use `pytest` fixtures - uses `unittest.TestCase` with `setUpClass`/`tearDownClass`
+- Write configs in standard location - use `configs/{model_type}/`
+
+**CRITICAL WARNING** (`gps/config/defaults_config.py` lines 9-12):
+> "At the time of writing, the order in which custom config-setting functions like this one are executed is random... Therefore never reset here config options that are custom added, only change those that exist in core GraphGym."
+
+## UNIQUE STYLES
+
+**1. Layer Type String Format**
+- Configs use: `layer_type: None+Transformer` or `layer_type: GINE+Transformer`
+- Parsed as: `local_gnn_type, global_model_type = macro_gps_layer_type.split("+")`
+
+**2. PAG Configuration**
+- Custom section under `pag:` (not `model:`)
+- Nested: `pag.layer_defaults.macro`, `pag.layer_defaults.local`, etc.
+
+**3. OTFormer Configuration**
+- Custom section under `otformer:` (not `model:`)
+- Dual sub-sections: `otformer.motif:` for Sinkhorn OT settings, `otformer.pretrain:` for pretraining tasks
+- Pretraining modes: `joint`, `atom_only`, `motif_only`, `edge_only`, `no_ot`
+
+**4. RUM Test Import Pattern**
+- Tests use: `from rum.layers import RUMLayer` (not `gps.layer.rum.layers`)
+- Works because tests run from within `rum/` directory context
+
+**5. Chinese Comments in PAG**
+- `path_attention.py` has Chinese comments (e.g., "计算注意力权重的熵极小化损失")
+
+**6. BigBird Block-Sparse Attention**
+- `bigbird_layer.py` (1932 lines) - 5-part attention computation
+- Each query block (first, second, middle, second-last, last) uses different patterns
+
+## COMMANDS
 
 ```bash
-# Train with a config file
+# Environment
+pixi install        # Install dependencies
+pixi shell          # Activate environment
+
+# Training
 pixi run python main.py --cfg configs/GPS/zinc-GPS+RWSE.yaml wandb.use=False
-
-# Run with multiple seeds
 pixi run python main.py --cfg configs/GPS/zinc-GPS+RWSE.yaml --repeat 5 wandb.use=False
-```
 
-### Running Tests
-
-```bash
-# Run all unit tests
+# Testing
 python -m pytest unittests/
-
-# Run all unit tests with unittest
 python -m unittest discover -s unittests
-
-# Run a single test file
 python -m unittest unittests.test_eigvecs
 
-# Run a specific test
-python -m unittest unittests.test_eigvecs.TestEigvecsNormalization.test_L1
+# Batch execution (HPC/SLURM)
+./run/run_experiments.sh
 ```
+
+## NOTES
+
+**Complexity Hotspots:**
+1. `bigbird_layer.py` (1932 lines) - Google Research BigBird port
+2. `performer_layer.py` (796 lines) - Performer linear attention
+3. `master_loader.py` (698 lines) - 15+ dataset format handling
+4. `pcqm4mv2_contact.py` (560 lines) - Link prediction with custom negative sampling
+
+**Hidden Patterns:**
+- RUM submodule has empty `__init__.py` - tests import via `from rum.layers`
+- PAG uses implicit namespace package (no `__init__.py`)
+- Custom training modes: `standard` vs `custom` in `cfg.train.mode`
+
+**Cross-Module Dependencies:**
+- `gps/network/pag_model.py` imports from `gps.layer.pag.fusion`, `gps.layer.pag_layer`, etc.
+- `gps/train/custom_train.py` uses `gps.utils`, `gps.loss`, `gps.logger`
+- All modules auto-discovered via glob pattern in respective `__init__.py`
 
 ## Code Style Guidelines
 
@@ -233,3 +343,26 @@ The main model is `GPSModel` combining:
 - Node/edge encoders
 - Multiple `GPSLayer` layers (GNN + attention)
 - Graph head for final prediction
+
+### OTFormer Architecture
+
+OTFormer (Optimal Transport Transformer) is a specialized model using Sinkhorn optimal transport for motif matching:
+
+**Core Components**:
+- **Sinkhorn Algorithm**: Entropy-regularized optimal transport for matching paths to motifs
+- **OTMotifMemory**: Learnable motif memory matched via OT to random walk paths
+- **OTFormerBlock**: Dual-track transformer processing node and pair representations
+- **RUM Model**: Random Walk Model for path feature extraction
+- **Recycling Mechanism**: Iterative refinement of representations
+
+**Pretraining Tasks**:
+1. **Masked Atom Prediction**: Predict masked atom types (molecular graphs)
+2. **Motif Prediction**: Predict motif membership from OT assignments
+3. **Edge Denoising**: Distinguish true edges from noise (perturbed edges)
+4. **OT Prior Loss**: Regularize transport matrix to minimize transport cost
+
+**Integration**:
+- Follows same registration pattern as GPSModel, PAGModel
+- Uses shared `FeatureEncoder` from `gps_model.py`
+- Custom config section: `otformer:` with `motif:` and `pretrain:` sub-sections
+- Located in `configs/OTFormer/` directory

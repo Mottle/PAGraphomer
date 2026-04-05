@@ -168,3 +168,6 @@ dmypy.json
 !.pixi/config.toml
 
 .codex
+AGENTS.md
+
+idea/
