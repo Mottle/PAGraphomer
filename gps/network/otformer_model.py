@@ -95,6 +95,11 @@ class OTFormerModel(torch.nn.Module):
         GNNHead = register.head_dict[cfg.gnn.head]
         self.post_mp = GNNHead(dim_in=dim_h, dim_out=dim_out)
 
+        finetune_on = getattr(cfg.otformer.finetune, "enable", False)
+        if finetune_on and cfg.gnn.head == "otformer_finetune":
+            from gps.head.otformer_finetune_head import OTFormerFineTuneHead
+            self.post_mp = OTFormerFineTuneHead(dim_in=dim_h, dim_out=dim_out)
+
     @staticmethod
     def _connected_components_from_edges(active_local_idx, edge_src, edge_dst):
         """Return connected components over `active_local_idx` using local edges."""
@@ -570,6 +575,8 @@ class OTFormerModel(torch.nn.Module):
             "cost": cost,
             "atom_mask": atom_mask,
             "motif_block_mask": motif_block_mask,
+            "z_out": z,
+            "node_mask": node_mask,
         }
         if getattr(cfg.otformer.pretrain, "enable", False):
             true_adj = to_dense_adj(

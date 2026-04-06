@@ -50,3 +50,21 @@ def set_cfg_otformer(cfg):
     cfg.otformer.pretrain.w_motif_mask = 1.0
     cfg.otformer.pretrain.w_edge_denoise = 1.0
     cfg.otformer.pretrain.w_ot_prior = 0.1
+
+    cfg.otformer.finetune = CN()
+    cfg.otformer.finetune.enable = False
+    cfg.otformer.finetune.freeze_backbone = True
+    cfg.otformer.finetune.freeze_backbone_epochs = 0
+    cfg.otformer.finetune.backbone_lr_ratio = 0.1
+    cfg.otformer.finetune.train_encoder_when_freeze_backbone = True
+    cfg.otformer.finetune.encoder_lr_ratio = 1.0
+    cfg.otformer.finetune.readout_dim = 256
+    cfg.otformer.finetune.pooling_z = "mean"
+    cfg.otformer.finetune.cls_hidden = 128
+    cfg.otformer.finetune.cls_mlp_activation = "gelu"
+    cfg.otformer.finetune.cls_activation = "none"
+    cfg.otformer.finetune.reg_hidden = 128
+    cfg.otformer.finetune.reg_mlp_activation = "gelu"
+    cfg.otformer.finetune.asl_gamma_pos = 1.0
+    cfg.otformer.finetune.asl_gamma_neg = 4.0
+    cfg.otformer.finetune.asl_clip = 0.05

@@ -12,8 +12,8 @@ def set_cfg_pretrained(cfg):
     # and fine-tune / run inference with it on a specified dataset.
     cfg.pretrained.dir = ""
 
-    # Discard pretrained weights of the prediction head and reinitialize.
+    cfg.pretrained.weights_path = ""
+
     cfg.pretrained.reset_prediction_head = True
 
-    # Freeze the main pretrained 'body' of the model, learning only the new head
     cfg.pretrained.freeze_main = False

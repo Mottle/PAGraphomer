@@ -3,6 +3,20 @@ import os
 import torch
 import logging
 
+# PyTorch 2.6 changed torch.load default weights_only to True.
+# This breaks PyG/OGB dataset loading which uses custom classes.
+# Monkey-patch to restore backward compatibility.
+_original_torch_load = torch.load
+
+
+def _patched_torch_load(f, map_location=None, pickle_module=None, **kwargs):
+    if "weights_only" not in kwargs:
+        kwargs["weights_only"] = False
+    return _original_torch_load(f, map_location=map_location, pickle_module=pickle_module, **kwargs)
+
+
+torch.load = _patched_torch_load
+
 import gps  # noqa, register custom modules
 from gps.agg_runs import agg_runs
 from gps.optimizer.extra_optimizers import ExtendedSchedulerConfig
@@ -29,7 +43,12 @@ from torch_geometric.graphgym.utils.device import auto_select_device
 from torch_geometric.graphgym.register import train_dict
 from torch_geometric import seed_everything
 
-from gps.finetuning import load_pretrained_model_cfg, init_model_from_pretrained
+from gps.finetuning import (
+    find_latest_pretrained_dir,
+    find_latest_zinc_pretrained_dir,
+    init_model_from_pretrained,
+    load_pretrained_model_cfg,
+)
 from gps.logger import create_logger
 
 torch.backends.cuda.matmul.allow_tf32 = True  # Default False in PyTorch 1.12+
@@ -147,8 +166,30 @@ if __name__ == "__main__":
         cfg.run_id = run_id
         seed_everything(cfg.seed)
         auto_select_device()
-        if cfg.pretrained.dir:
+        if cfg.pretrained.dir or cfg.pretrained.weights_path:
             cfg = load_pretrained_model_cfg(cfg)
+        elif cfg.otformer.finetune.enable and not cfg.pretrained.dir:
+            zinc_dir = find_latest_zinc_pretrained_dir()
+            if zinc_dir:
+                logging.info(
+                    f"[*] Auto-selected default ZINC pretrained model: {zinc_dir}. "
+                    f"Set pretrained.dir/pretrained.weights_path to override."
+                )
+                cfg.pretrained.dir = zinc_dir
+                cfg = load_pretrained_model_cfg(cfg)
+            else:
+                auto_dir = find_latest_pretrained_dir()
+                if auto_dir:
+                    logging.warning(
+                        "[W] No ZINC pretraining run found under 'results/'. "
+                        "Latest OTFormer pretraining is: %s",
+                        auto_dir,
+                    )
+                raise FileNotFoundError(
+                    "OTFormer finetuning requires pretrained weights, but no "
+                    "ZINC OTFormer pretraining was found in 'results/'. "
+                    "Set 'pretrained.dir' or 'pretrained.weights_path' manually."
+                )
         logging.info(
             f"[*] Run ID {run_id}: seed={cfg.seed}, "
             f"split_index={cfg.dataset.split_index}"
@@ -158,13 +199,36 @@ if __name__ == "__main__":
         loaders = create_loader()
         loggers = create_logger()
         model = create_model()
-        if cfg.pretrained.dir:
+        if cfg.pretrained.dir or cfg.pretrained.weights_path:
             model = init_model_from_pretrained(
                 model,
                 cfg.pretrained.dir,
                 cfg.pretrained.freeze_main,
                 cfg.pretrained.reset_prediction_head,
                 seed=cfg.seed,
+                weights_path=cfg.pretrained.weights_path,
+            )
+            report = getattr(model, "_pretrained_load_report", None)
+            if report is not None:
+                if report["strict_match_ratio"] == 100.0:
+                    logging.info(
+                        "[*] Startup check: pretrained weights loaded successfully "
+                        "with 100%% strict match (%d/%d).",
+                        report["matched"],
+                        report["target"],
+                    )
+                else:
+                    logging.warning(
+                        "[W] Startup check: pretrained weights loaded, but strict "
+                        "match is %.2f%% (%d/%d).",
+                        report["strict_match_ratio"],
+                        report["matched"],
+                        report["target"],
+                    )
+        elif cfg.otformer.finetune.enable:
+            raise ValueError(
+                "OTFormer finetuning is enabled but pretrained weights are not "
+                "configured. Set 'pretrained.dir' or 'pretrained.weights_path'."
             )
         optimizer = create_optimizer(model.parameters(), new_optimizer_config(cfg))
         scheduler = create_scheduler(optimizer, new_scheduler_config(cfg))

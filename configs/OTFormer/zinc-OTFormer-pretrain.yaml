@@ -32,7 +32,7 @@ posenc_RWSE:
 train:
   # Custom pretraining loop registered in gps/train/otformer_pretrain.py
   mode: otformer_pretrain
-  batch_size: 16
+  batch_size: 128
   eval_period: 1
 model:
   # OTFormer network registered in gps/network/otformer_model.py

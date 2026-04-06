@@ -44,39 +44,66 @@ GPS (Graph Positional Encoding with Self-Attention) is a PyTorch Geometric-based
 ## CONVENTIONS (Deviations from Standard)
 
 **1. Dual Test Directories**
-- `tests/` = Integration tests + shell scripts
-- `unittests/` = Unit tests (uses unittest framework)
-二次元构造: 大多数项目只有一个test目录
+- `tests/` = Integration tests + shell scripts + config tests
+- `unittests/` = Unit tests (uses unittest framework, not pytest)
+- 二次元构造: 大多数项目只有一个test目录
 
 **2. Config Organization by Model Type**
 - Standard: Group by dataset/task (zinc/, ogbg-molhiv/)
 - This project: Group by architecture (GPS/, SAN/, PAG/, OTFormer/, GatedGCN/, Graphormer/, GINE/)
+- **Why**: Facilitates comparison of architectures on same datasets
 
 **3. Layer Subdirectory Pattern**
 - `gps/layer/` has flat files + nested subdirs (`rum/`, `pag/`)
-- RUM submodule has empty `__init__.py` (standalone import pattern)
-- PAG submodule lacks `__init__.py` (implicit namespace package)
+  - `rum/` has empty `__init__.py` for standalone import pattern (tests use `from rum.layers`)
+  - `pag/` lacks `__init__.py` (implicit namespace package)
+- Subdirectories handle specialized architectures (RUM, PAG, OTFormer)
 
 **4. Example Files Everywhere**
 - Each submodule has `example.py` (e.g., `gps/layer/example.py`, `gps/network/example.py`)
+- These are **templates** not executable examples
 - Unusual pattern - most projects centralize examples
 
 **5. Pixi for Environment Management**
 - Uses `pixi.toml` instead of conda/pip/poetry
 - No `setup.py`, `pyproject.toml`, or `requirements.txt`
+- Command: `pixi install`, `pixi shell`, `pixi run python main.py ...`
 
 **6. GraphGym Extension Pattern**
 - Imports from `torch_geometric.graphgym.*`
-- Uses `@register_*` decorators extensively
-- Custom training modes via `cfg.train.mode`
+- Uses `@register_*` decorators extensively:
+  - `@register_network` for models
+  - `@register_train` for training loops  
+  - `@register_loader` for datasets
+  - `@register_config` for config extensions
+- Custom training modes via `cfg.train.mode` (`standard` vs `custom`)
 
 **7. Module Auto-Discovery**
-- All subpackages use glob pattern in `__init__.py`:
+- All subpackages use identical glob pattern in `__init__.py`:
   ```python
+  from os.path import dirname, basename, isfile, join
+  import glob
   modules = glob.glob(join(dirname(__file__), "*.py"))
   __all__ = [basename(f)[:-3] for f in modules if isfile(f) and not f.endswith("__init__.py")]
   ```
 - New files automatically imported without modifying `__init__.py`
+- **CRITICAL**: This pattern is used in ALL `gps/` subdirectories
+
+**8. Layer Type String Format**
+- Configs use: `layer_type: {local_gnn}+{global_model}`
+- Examples: `GINE+Transformer`, `None+Transformer`, `GatedGCN+BigBird`
+- Parsed as: `local_gnn_type, global_model_type = macro_gps_layer_type.split("+")`
+
+**9. PAG Custom Configuration**
+- PAG configs have custom `pag:` section (not under `model:`)
+- Nested structure: `pag.layer_defaults.macro`, `pag.layer_defaults.local`, etc.
+- Located in `configs/PAG/` directory
+
+**10. OTFormer Custom Configuration**
+- OTFormer configs have custom `otformer:` section
+- Dual sub-sections: `otformer.motif:` (Sinkhorn OT), `otformer.pretrain:` (pretraining tasks)
+- Pretraining modes: `joint`, `atom_only`, `motif_only`, `edge_only`, `no_ot`
+- Located in `configs/OTFormer/` directory
 
 ## ANTI-PATTERNS (THIS PROJECT)
 
@@ -317,6 +344,49 @@ class TestMyFunction(unittest.TestCase):
         with self.assertRaises(ValueError):
             my_function(invalid_input)
 ```
+
+## COMPLEXITY HOTSPOTS
+
+**1. `gps/layer/bigbird_layer.py` (1932 lines)**
+- Google Research BigBird block-sparse attention port
+- 5-part attention computation (first, second, middle, second-last, last blocks)
+- Complex mask handling and random block planning
+
+**2. `gps/layer/performer_layer.py` (796 lines)**
+- Performer linear attention (FAVOR+ mechanism)
+- Random feature maps for kernel approximation
+- Memory-efficient attention for long sequences
+
+**3. `gps/loader/master_loader.py` (698 lines)**
+- Orchestrates 15+ dataset formats (PyG-ZINC, OGB, PyG-AQSOL, etc.)
+- PE precomputation integration
+- Split generation logic with multiple modes
+
+**4. `gps/network/otformer_model.py` (596 lines)**
+- OTFormer (Optimal Transport Transformer) architecture
+- Sinkhorn optimal transport for motif matching
+- Dual-track transformer with recycling mechanism
+
+**5. `gps/loader/dataset/pcqm4mv2_contact.py` (556 lines)**
+- PCQM4Mv2 contact prediction dataset
+- Custom negative sampling for link prediction
+- Complex edge feature generation
+
+**6. `gps/transform/posenc_stats.py` (439 lines)**
+- Centralized PE statistics computation
+- Eigen-decomposition for LapPE with 6 normalization schemes
+- Random walk landing probabilities for RWSE
+- 7 PE type implementations with shared components
+
+**7. `gps/train/custom_train.py` (407 lines)**
+- Custom training loop for PAG/OTFormer models
+- 5 registered trainers via `@register_train`
+- Integration with GraphGym's training infrastructure
+
+**8. `gps/encoder/signnet_pos_encoder.py` (387 lines)**
+- Sign-invariant encoder for eigenvectors
+- Handles sign ambiguity (±v) of Laplacian eigenvectors
+- `GINDeepSigns` and `MaskedGINDeepSigns` variants
 
 ## Common Patterns
 
