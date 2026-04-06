@@ -75,9 +75,7 @@ class OTFormerFineTuneHead(nn.Module):
             neg_inf = torch.finfo(z_out.dtype).min
             z_masked = z_out.masked_fill(~pair_mask.unsqueeze(-1), neg_inf)
             r_z = z_masked.amax(dim=(1, 2))
-            r_z = torch.where(
-                torch.isfinite(r_z), r_z, torch.zeros_like(r_z)
-            )
+            r_z = torch.where(torch.isfinite(r_z), r_z, torch.zeros_like(r_z))
             return r_z
 
         z_masked = z_out * pair_mask.unsqueeze(-1).float()

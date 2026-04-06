@@ -46,6 +46,8 @@ def set_cfg_otformer(cfg):
     cfg.otformer.pretrain.edge_perturb_ratio = 0.1
     cfg.otformer.pretrain.edge_sample_ratio = 0.1
     cfg.otformer.pretrain.edge_neg_ratio = 1.0
+    cfg.otformer.pretrain.edge_denoise_mode = "hard_spd"
+    cfg.otformer.pretrain.hard_neg_max_spd = 3
     cfg.otformer.pretrain.w_mask_atom = 1.0
     cfg.otformer.pretrain.w_motif_mask = 1.0
     cfg.otformer.pretrain.w_edge_denoise = 1.0

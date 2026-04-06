@@ -25,7 +25,7 @@ def asymmetric_loss(pred, true):
     p_m = torch.clamp(p - clip, min=0.0, max=1.0).clamp(min=1e-8, max=1 - 1e-8)
 
     pos_loss = -((1 - p) ** gamma_pos) * torch.log(p) * true_labeled
-    neg_loss = -(p_m ** gamma_neg) * torch.log(1 - p_m) * (1 - true_labeled)
+    neg_loss = -(p_m**gamma_neg) * torch.log(1 - p_m) * (1 - true_labeled)
 
     loss = (pos_loss + neg_loss).sum() / is_labeled.sum().clamp(min=1)
     return loss, torch.sigmoid(pred)

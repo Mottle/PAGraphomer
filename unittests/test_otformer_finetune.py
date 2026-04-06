@@ -10,7 +10,11 @@ from torch_geometric.graphgym.config import cfg, load_cfg, set_cfg
 
 import gps  # noqa: F401, register modules
 from gps.head.otformer_finetune_head import OTFormerFineTuneHead
-from gps.loss.asymmetric_loss import asymmetric_loss, bce_with_logits_finetune, mse_finetune
+from gps.loss.asymmetric_loss import (
+    asymmetric_loss,
+    bce_with_logits_finetune,
+    mse_finetune,
+)
 from gps.finetuning import (
     get_final_pretrained_ckpt,
     compare_cfg,
@@ -48,7 +52,8 @@ class TestOTFormerFineTuneHead(ut.TestCase):
         )
         batch.y = torch.randn(n_graphs, 1)
         batch.otformer_aux = {
-            "transport": torch.ones(n_nodes, 4, cfg.otformer.motif.memory_size) / (4 * cfg.otformer.motif.memory_size),
+            "transport": torch.ones(n_nodes, 4, cfg.otformer.motif.memory_size)
+            / (4 * cfg.otformer.motif.memory_size),
             "z_out": torch.randn(n_graphs, n_max, n_max, cfg.gnn.dim_inner),
             "node_mask": torch.ones(n_graphs, n_max, dtype=torch.bool),
         }
@@ -81,7 +86,9 @@ class TestOTFormerFineTuneHead(ut.TestCase):
         head = OTFormerFineTuneHead(dim_in=cfg.gnn.dim_inner, dim_out=1)
         batch = self._make_batch(n_nodes=20, n_graphs=4, n_max=5)
         pred, _ = head(batch)
-        self.assertTrue((batch.graph_pred_prob >= 0).all() and (batch.graph_pred_prob <= 1).all())
+        self.assertTrue(
+            (batch.graph_pred_prob >= 0).all() and (batch.graph_pred_prob <= 1).all()
+        )
 
     def test_cls_activation_softmax(self):
         cfg.dataset.task_type = "classification"
@@ -314,8 +321,12 @@ class TestInitModelFromPretrained(ut.TestCase):
             model.body = torch.nn.Linear(16, 16)
             model.post_mp = torch.nn.Linear(16, 1)
             result = init_model_from_pretrained(
-                model, "", freeze_main=False, reset_prediction_head=True,
-                seed=0, weights_path=str(ckpt_path),
+                model,
+                "",
+                freeze_main=False,
+                reset_prediction_head=True,
+                seed=0,
+                weights_path=str(ckpt_path),
             )
             self.assertTrue(result.post_mp.weight.requires_grad)
 
@@ -327,8 +338,12 @@ class TestInitModelFromPretrained(ut.TestCase):
             model.body = torch.nn.Linear(16, 16)
             model.post_mp = torch.nn.Linear(16, 1)
             result = init_model_from_pretrained(
-                model, "", freeze_main=True, reset_prediction_head=True,
-                seed=0, weights_path=str(ckpt_path),
+                model,
+                "",
+                freeze_main=True,
+                reset_prediction_head=True,
+                seed=0,
+                weights_path=str(ckpt_path),
             )
             self.assertFalse(result.body.weight.requires_grad)
             self.assertTrue(result.post_mp.weight.requires_grad)
@@ -340,7 +355,9 @@ class TestInitModelFromPretrained(ut.TestCase):
             model.post_mp = torch.nn.Linear(16, 1)
             with self.assertRaises(FileNotFoundError):
                 init_model_from_pretrained(
-                    model, "", weights_path=f"{td}/nonexistent.ckpt",
+                    model,
+                    "",
+                    weights_path=f"{td}/nonexistent.ckpt",
                 )
 
 

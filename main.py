@@ -12,7 +12,9 @@ _original_torch_load = torch.load
 def _patched_torch_load(f, map_location=None, pickle_module=None, **kwargs):
     if "weights_only" not in kwargs:
         kwargs["weights_only"] = False
-    return _original_torch_load(f, map_location=map_location, pickle_module=pickle_module, **kwargs)
+    return _original_torch_load(
+        f, map_location=map_location, pickle_module=pickle_module, **kwargs
+    )
 
 
 torch.load = _patched_torch_load

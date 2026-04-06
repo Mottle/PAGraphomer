@@ -25,7 +25,9 @@ def _find_latest_pretrained_dir_filtered(base_dir="results", cfg_filter=None):
                     exp_cfg = yaml.safe_load(f)
 
                 model_type = exp_cfg.get("model", {}).get("type")
-                is_pretrain = exp_cfg.get("otformer", {}).get("pretrain", {}).get("enable", False)
+                is_pretrain = (
+                    exp_cfg.get("otformer", {}).get("pretrain", {}).get("enable", False)
+                )
 
                 if model_type == "OTFormerModel" and is_pretrain:
                     if cfg_filter is not None and not cfg_filter(exp_cfg):
@@ -45,7 +47,8 @@ def _find_latest_pretrained_dir_filtered(base_dir="results", cfg_filter=None):
                         )
                         has_pretrain_pt = (
                             osp.isdir(pretrain_dir)
-                            and len(glob(osp.join(pretrain_dir, "otformer_epoch_*.pt"))) > 0
+                            and len(glob(osp.join(pretrain_dir, "otformer_epoch_*.pt")))
+                            > 0
                         )
                         if has_graphgym_ckpt or has_pretrain_pt:
                             has_weights = True
@@ -93,8 +96,10 @@ def get_final_pretrained_ckpt(ckpt_dir):
     if osp.isdir(ckpt_dir):
         ckpt_files = glob(osp.join(ckpt_dir, "*.ckpt"))
         if ckpt_files:
+
             def _ckpt_epoch(path):
                 return int(osp.basename(path).split(".")[0])
+
             return max(ckpt_files, key=_ckpt_epoch)
 
     # Fallback: OTFormer pretraining rolling snapshots.
@@ -103,10 +108,12 @@ def get_final_pretrained_ckpt(ckpt_dir):
     pretrain_dir = osp.join(seed_dir, "pretrain_weights")
     pretrain_files = glob(osp.join(pretrain_dir, "otformer_epoch_*.pt"))
     if pretrain_files:
+
         def _pt_epoch(path):
             stem = osp.splitext(osp.basename(path))[0]
             # otformer_epoch_0007 -> 7
             return int(stem.split("_")[-1])
+
         return max(pretrain_files, key=_pt_epoch)
 
     raise FileNotFoundError(
@@ -172,33 +179,44 @@ def load_pretrained_model_cfg(cfg):
     compare_cfg(cfg, pretrained_cfg, "model.type", strict=True)
     compare_cfg(cfg, pretrained_cfg, "model.graph_pooling")
     compare_cfg(cfg, pretrained_cfg, "model.edge_decoding")
-    relax_dataset_encoder_check = (
-        cfg.model.type == "OTFormerModel"
-        and bool(getattr(cfg.otformer.finetune, "enable", False))
+    relax_dataset_encoder_check = cfg.model.type == "OTFormerModel" and bool(
+        getattr(cfg.otformer.finetune, "enable", False)
     )
     compare_cfg(
-        cfg, pretrained_cfg, "dataset.node_encoder",
-        strict=not relax_dataset_encoder_check
+        cfg,
+        pretrained_cfg,
+        "dataset.node_encoder",
+        strict=not relax_dataset_encoder_check,
     )
     compare_cfg(
-        cfg, pretrained_cfg, "dataset.node_encoder_name",
-        strict=not relax_dataset_encoder_check
+        cfg,
+        pretrained_cfg,
+        "dataset.node_encoder_name",
+        strict=not relax_dataset_encoder_check,
     )
     compare_cfg(
-        cfg, pretrained_cfg, "dataset.node_encoder_bn",
-        strict=not relax_dataset_encoder_check
+        cfg,
+        pretrained_cfg,
+        "dataset.node_encoder_bn",
+        strict=not relax_dataset_encoder_check,
     )
     compare_cfg(
-        cfg, pretrained_cfg, "dataset.edge_encoder",
-        strict=not relax_dataset_encoder_check
+        cfg,
+        pretrained_cfg,
+        "dataset.edge_encoder",
+        strict=not relax_dataset_encoder_check,
     )
     compare_cfg(
-        cfg, pretrained_cfg, "dataset.edge_encoder_name",
-        strict=not relax_dataset_encoder_check
+        cfg,
+        pretrained_cfg,
+        "dataset.edge_encoder_name",
+        strict=not relax_dataset_encoder_check,
     )
     compare_cfg(
-        cfg, pretrained_cfg, "dataset.edge_encoder_bn",
-        strict=not relax_dataset_encoder_check
+        cfg,
+        pretrained_cfg,
+        "dataset.edge_encoder_bn",
+        strict=not relax_dataset_encoder_check,
     )
 
     if cfg.model.type == "OTFormerModel":
@@ -235,7 +253,11 @@ def load_pretrained_model_cfg(cfg):
 
 
 def init_model_from_pretrained(
-    model, pretrained_dir, freeze_main=False, reset_prediction_head=True, seed=0,
+    model,
+    pretrained_dir,
+    freeze_main=False,
+    reset_prediction_head=True,
+    seed=0,
     weights_path="",
 ):
     """Copy model parameters from pretrained model except the prediction head.
@@ -310,7 +332,8 @@ def init_model_from_pretrained(
         }
 
     target_keys = [
-        k for k in model_dict.keys()
+        k
+        for k in model_dict.keys()
         if (
             (not _is_encoder_key(k))
             and ((not _is_prediction_head_key(k)) if reset_prediction_head else True)

@@ -32,7 +32,7 @@ posenc_RWSE:
 train:
   # Custom pretraining loop registered in gps/train/otformer_pretrain.py
   mode: otformer_pretrain
-  batch_size: 128
+  batch_size: 64
   eval_period: 1
 model:
   # OTFormer network registered in gps/network/otformer_model.py
@@ -54,15 +54,15 @@ otformer:
   rum:
     # RUM path encoder used for local walk features.
     depth: 2
-    num_samples: 8
-    rw_length: 4
+    num_samples: 12
+    rw_length: 8
     dropout: 0.0
     binary: False
   motif:
     # Global motif memory + Sinkhorn OT matching.
     memory_size: 64
     # OT entropy regularization epsilon.
-    sinkhorn_eps: 0.1
+    sinkhorn_eps: 0.5
     # Sinkhorn iterations per forward.
     sinkhorn_iters: 5
     # Use log-domain Sinkhorn for numerical stability.
@@ -91,6 +91,11 @@ otformer:
     edge_sample_ratio: 0.1
     # Number of sampled negative undirected pairs per dropped pair.
     edge_neg_ratio: 2.0
+    # Hard negative sampling: use SPD-based negatives instead of random.
+    # Options: random | hard_spd | edge_type
+    edge_denoise_mode: hard_spd
+    # Max shortest-path distance for hard negative candidates.
+    hard_neg_max_spd: 3
     # Loss weights for joint objective:
     # L = w_mask_atom*L_mask_atom + w_motif_mask*L_motif_mask
     #   + w_edge_denoise*L_edge_denoise + w_ot_prior*L_ot_prior
@@ -119,6 +124,6 @@ optim:
   optimizer: adamW
   weight_decay: 5e-5
   base_lr: 0.0005
-  max_epoch: 300
+  max_epoch: 500
   scheduler: cosine_with_warmup
-  num_warmup_epochs: 25
+  num_warmup_epochs: 50

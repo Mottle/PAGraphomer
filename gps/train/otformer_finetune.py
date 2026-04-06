@@ -61,7 +61,9 @@ def _set_param_group_lr(optimizer, group_name, lr):
             group["lr"] = lr
 
 
-def train_epoch_finetune(logger, loader, model, optimizer, scheduler, batch_accumulation):
+def train_epoch_finetune(
+    logger, loader, model, optimizer, scheduler, batch_accumulation
+):
     model.train()
     optimizer.zero_grad()
     time_start = time.time()
@@ -233,7 +235,9 @@ def otformer_finetune_train(loggers, loaders, model, optimizer, scheduler):
                 param.requires_grad = True
             for param in backbone_params:
                 param.requires_grad = True
-            _set_param_group_lr(optimizer, "encoder", cfg.optim.base_lr * encoder_lr_ratio)
+            _set_param_group_lr(
+                optimizer, "encoder", cfg.optim.base_lr * encoder_lr_ratio
+            )
             _set_param_group_lr(
                 optimizer, "backbone", cfg.optim.base_lr * backbone_lr_ratio
             )
@@ -256,7 +260,9 @@ def otformer_finetune_train(loggers, loaders, model, optimizer, scheduler):
 
         if is_eval_epoch(cur_epoch):
             for i in range(1, num_splits):
-                eval_epoch_finetune(loggers[i], loaders[i], model, split=split_names[i - 1])
+                eval_epoch_finetune(
+                    loggers[i], loaders[i], model, split=split_names[i - 1]
+                )
                 perf[i].append(loggers[i].write_epoch(cur_epoch))
         else:
             for i in range(1, num_splits):

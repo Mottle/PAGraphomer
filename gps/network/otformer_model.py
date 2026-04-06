@@ -90,7 +90,12 @@ class OTFormerModel(torch.nn.Module):
         nn.init.normal_(self.mask_token, std=0.02)
         self.atom_decoder = nn.Linear(dim_h, atom_classes)
         self.motif_decoder = nn.Linear(dim_h, cfg.otformer.motif.memory_size)
-        self.edge_decoder = nn.Linear(dim_h, 1)
+        denoise_mode = getattr(cfg.otformer.pretrain, "edge_denoise_mode", "random")
+        if denoise_mode == "edge_type":
+            n_edge_types = max(getattr(cfg.dataset, "edge_encoder_num_types", 4), 1)
+            self.edge_decoder = nn.Linear(dim_h, n_edge_types + 1)
+        else:
+            self.edge_decoder = nn.Linear(dim_h, 1)
 
         GNNHead = register.head_dict[cfg.gnn.head]
         self.post_mp = GNNHead(dim_in=dim_h, dim_out=dim_out)
@@ -98,6 +103,7 @@ class OTFormerModel(torch.nn.Module):
         finetune_on = getattr(cfg.otformer.finetune, "enable", False)
         if finetune_on and cfg.gnn.head == "otformer_finetune":
             from gps.head.otformer_finetune_head import OTFormerFineTuneHead
+
             self.post_mp = OTFormerFineTuneHead(dim_in=dim_h, dim_out=dim_out)
 
     @staticmethod
@@ -207,52 +213,37 @@ class OTFormerModel(torch.nn.Module):
         return mask
 
     def _perturb_edges(self, edge_index, edge_attr, node_batch):
+        if edge_attr is not None:
+            edge_attr = edge_attr.clone()
         ratio = cfg.otformer.pretrain.edge_perturb_ratio
-        if ratio <= 0:
-            return edge_index, edge_attr, None
-
         device = edge_index.device
-        num_edges = edge_index.size(1)
-        if num_edges == 0:
-            return edge_index, edge_attr, None
-
-        local_idx = _local_node_index(node_batch)
-        num_graphs = int(node_batch.max().item()) + 1 if node_batch.numel() > 0 else 0
+        num_graphs = node_batch.max().item() + 1
         edge_graph = node_batch[edge_index[0]]
-        keep = torch.ones(num_edges, dtype=torch.bool, device=device)
-
-        perturb_b = []
-        perturb_i = []
-        perturb_j = []
-        perturb_y = []
+        keep = torch.ones(edge_index.size(1), dtype=torch.bool, device=device)
         dropped_pairs_per_graph = {}
+        perturb_b, perturb_i, perturb_j, perturb_y = [], [], [], []
 
-        # Drop edges per-graph.
         for g in range(num_graphs):
-            eids = (edge_graph == g).nonzero(as_tuple=False).flatten()
-            if eids.numel() == 0:
+            nodes = (node_batch == g).nonzero(as_tuple=False).flatten()
+            if nodes.numel() < 2:
                 continue
-            pair_to_eids = {}
-            for eid in eids.tolist():
+            mask = edge_graph == g
+            n_edges = mask.sum().item()
+            if n_edges < 2:
+                continue
+            n_drop = max(1, int(n_edges * ratio))
+            n_drop = min(n_drop, n_edges)
+            eids = mask.nonzero(as_tuple=False).flatten()
+            perm = torch.randperm(n_edges, device=device)[:n_drop]
+            drop_eids = eids[perm]
+            keep[drop_eids] = False
+            dropped_pairs_per_graph[g] = n_drop
+            local_idx = {n.item(): idx for idx, n in enumerate(nodes)}
+
+            for eid in drop_eids.tolist():
                 s = int(edge_index[0, eid].item())
                 d = int(edge_index[1, eid].item())
-                key = (s, d) if s <= d else (d, s)
-                pair_to_eids.setdefault(key, []).append(eid)
-            pairs = list(pair_to_eids.keys())
-            n_drop = int(len(pairs) * ratio)
-            if n_drop <= 0 and ratio > 0:
-                n_drop = 1
-            n_drop = min(n_drop, len(pairs))
-            if n_drop <= 0 or len(pairs) == 0:
-                continue
-            drop_ids = torch.randperm(len(pairs), device=device)[:n_drop].tolist()
-            dropped_pairs_per_graph[g] = n_drop
-            for pid in drop_ids:
-                s, d = pairs[pid]
-                for eid in pair_to_eids[(s, d)]:
-                    keep[eid] = False
-                li = int(local_idx[s].item())
-                lj = int(local_idx[d].item())
+                li, lj = local_idx[s], local_idx[d]
                 if s == d:
                     perturb_b.append(torch.tensor([g], device=device, dtype=torch.long))
                     perturb_i.append(
@@ -261,7 +252,7 @@ class OTFormerModel(torch.nn.Module):
                     perturb_j.append(
                         torch.tensor([lj], device=device, dtype=torch.long)
                     )
-                    perturb_y.append(torch.ones(1, device=device, dtype=torch.float))
+                    perturb_y.append(torch.ones(1, device=device, dtype=torch.long))
                 else:
                     perturb_b.append(
                         torch.tensor([g, g], device=device, dtype=torch.long)
@@ -272,15 +263,15 @@ class OTFormerModel(torch.nn.Module):
                     perturb_j.append(
                         torch.tensor([lj, li], device=device, dtype=torch.long)
                     )
-                    perturb_y.append(torch.ones(2, device=device, dtype=torch.float))
+                    perturb_y.append(torch.ones(2, device=device, dtype=torch.long))
 
         edge_keep = edge_index[:, keep]
         attr_keep = edge_attr[keep] if edge_attr is not None else None
 
-        # Add random fake edges to match number of dropped edges in each graph.
-        add_src = []
-        add_dst = []
-        add_attr = []
+        mode = getattr(cfg.otformer.pretrain, "edge_denoise_mode", "random")
+        max_spd = getattr(cfg.otformer.pretrain, "hard_neg_max_spd", 3)
+
+        add_src, add_dst, add_attr, add_edge_type = [], [], [], []
         if edge_attr is not None:
             zero_attr = torch.zeros(
                 edge_attr.size(1), device=device, dtype=edge_attr.dtype
@@ -315,26 +306,28 @@ class OTFormerModel(torch.nn.Module):
                 d = int(edge_keep[1, eid].item())
                 existing.add((s, d) if s <= d else (d, s))
 
+            if mode == "hard_spd":
+                candidates = self._sample_hard_negatives_spd(
+                    edge_keep, node_batch, g, nodes, existing | true_existing, max_spd
+                )
+            else:
+                candidates = self._sample_random_negatives(
+                    nodes, existing | true_existing, target_add
+                )
+
             added = 0
-            attempts = 0
-            max_attempts = target_add * 20
-            while added < target_add and attempts < max_attempts:
-                attempts += 1
-                s = nodes[torch.randint(0, nodes.numel(), (1,), device=device)].item()
-                d = nodes[torch.randint(0, nodes.numel(), (1,), device=device)].item()
-                if s == d:
-                    continue
-                key = (s, d) if s <= d else (d, s)
-                if key in existing or key in true_existing:
-                    continue
-                existing.add(key)
+            for s, d in candidates:
+                if added >= target_add:
+                    break
+                existing.add((s, d) if s <= d else (d, s))
                 add_src.extend([s, d])
                 add_dst.extend([d, s])
                 if edge_attr is not None:
                     add_attr.append(zero_attr.clone())
                     add_attr.append(zero_attr.clone())
-                li = int(local_idx[s].item())
-                lj = int(local_idx[d].item())
+                add_edge_type.extend([0, 0])
+                li = int((nodes == s).nonzero().item())
+                lj = int((nodes == d).nonzero().item())
                 perturb_b.append(torch.tensor([g, g], device=device, dtype=torch.long))
                 perturb_i.append(
                     torch.tensor([li, lj], device=device, dtype=torch.long)
@@ -342,7 +335,7 @@ class OTFormerModel(torch.nn.Module):
                 perturb_j.append(
                     torch.tensor([lj, li], device=device, dtype=torch.long)
                 )
-                perturb_y.append(torch.zeros(2, device=device, dtype=torch.float))
+                perturb_y.append(torch.zeros(2, device=device, dtype=torch.long))
                 added += 1
 
         if add_src:
@@ -365,10 +358,100 @@ class OTFormerModel(torch.nn.Module):
                 "i": torch.cat(perturb_i),
                 "j": torch.cat(perturb_j),
                 "y": torch.cat(perturb_y),
+                "edge_type": (
+                    torch.tensor(add_edge_type, device=device, dtype=torch.long)
+                    if add_edge_type
+                    else torch.zeros(0, dtype=torch.long, device=device)
+                ),
             }
         else:
             pairs = None
         return edge_corrupt, attr_corrupt, pairs
+
+    def _sample_hard_negatives_spd(
+        self, edge_keep, node_batch, g, nodes, forbidden, max_spd
+    ):
+        """Sample negative pairs with SPD in [2, max_spd] as hard negatives.
+
+        Uses vectorized tensor ops (torch.triu + nonzero) instead of O(n^2)
+        Python nested loops for candidate extraction.
+        """
+        n = nodes.numel()
+        if n < 2:
+            return []
+
+        mask = node_batch[edge_keep[0]] == g
+        eids = mask.nonzero(as_tuple=False).flatten()
+        if eids.numel() == 0:
+            return self._sample_random_negatives(nodes, forbidden, 10)
+
+        src_global = edge_keep[0, eids]
+        dst_global = edge_keep[1, eids]
+
+        max_node_id = max(
+            nodes.max().item(), src_global.max().item(), dst_global.max().item()
+        )
+        local_idx = torch.full(
+            (max_node_id + 1,), -1, dtype=torch.long, device=nodes.device
+        )
+        local_idx[nodes] = torch.arange(n, device=nodes.device)
+        src_local = local_idx[src_global]
+        dst_local = local_idx[dst_global]
+        valid = (src_local >= 0) & (dst_local >= 0)
+        src_local = src_local[valid]
+        dst_local = dst_local[valid]
+
+        if src_local.numel() == 0:
+            return self._sample_random_negatives(nodes, forbidden, 10)
+
+        adj = torch.zeros((n, n), device=edge_keep.device, dtype=torch.bool)
+        adj[src_local, dst_local] = True
+
+        candidates = []
+        visited = adj.clone()
+        power = adj.clone().float()
+        for _ in range(2, max_spd + 1):
+            power = torch.mm(power, adj.float())
+            new_reachable = (power > 0) & ~visited
+            if new_reachable.any():
+                triu_mask = torch.triu(new_reachable, diagonal=1)
+                idx_i, idx_j = triu_mask.nonzero(as_tuple=False).T
+                if idx_i.numel() > 0:
+                    si_list = nodes[idx_i].tolist()
+                    dj_list = nodes[idx_j].tolist()
+                    for s, d in zip(si_list, dj_list):
+                        key = (s, d) if s <= d else (d, s)
+                        if key not in forbidden:
+                            candidates.append((s, d))
+            visited |= new_reachable
+            if len(candidates) >= 500:
+                break
+
+        if not candidates:
+            return self._sample_random_negatives(nodes, forbidden, 10)
+        import random
+
+        random.shuffle(candidates)
+        return candidates
+
+    def _sample_random_negatives(self, nodes, forbidden, target):
+        """Fallback: random negative sampling."""
+        candidates = []
+        n = nodes.numel()
+        attempts = 0
+        max_attempts = target * 20
+        while len(candidates) < target and attempts < max_attempts:
+            attempts += 1
+            i = torch.randint(0, n, (1,)).item()
+            j = torch.randint(0, n, (1,)).item()
+            if i == j:
+                continue
+            si, dj = int(nodes[i].item()), int(nodes[j].item())
+            key = (si, dj) if si <= dj else (dj, si)
+            if key not in forbidden:
+                forbidden.add(key)
+                candidates.append((si, dj))
+        return candidates
 
     def _compute_pretrain_losses(
         self,
@@ -408,18 +491,25 @@ class OTFormerModel(torch.nn.Module):
         else:
             losses["motif_mask"] = torch.tensor(0.0, device=device)
 
-        edge_logit_dense = self.edge_decoder(z_out).squeeze(-1)
+        edge_logit_dense = self.edge_decoder(z_out)
         true_adj_dense = ((true_adj_dense + true_adj_dense.transpose(1, 2)) > 0).float()
+
+        denoise_mode = getattr(cfg.otformer.pretrain, "edge_denoise_mode", "random")
+
         if perturbed_pairs is not None and perturbed_pairs["y"].numel() > 0:
-            pred_edge = edge_logit_dense[
-                perturbed_pairs["b"], perturbed_pairs["i"], perturbed_pairs["j"]
-            ]
-            # Follow the original OTFormer denoising intent:
-            # predict whether a pair is a true bond in the clean graph.
-            true_edge = true_adj_dense[
-                perturbed_pairs["b"], perturbed_pairs["i"], perturbed_pairs["j"]
-            ]
-            losses["edge_denoise"] = nn.BCEWithLogitsLoss()(pred_edge, true_edge)
+            b_idx = perturbed_pairs["b"]
+            i_idx = perturbed_pairs["i"]
+            j_idx = perturbed_pairs["j"]
+            labels = perturbed_pairs["y"]
+            pred = edge_logit_dense[b_idx, i_idx, j_idx]
+
+            if denoise_mode == "edge_type" and edge_attr is not None:
+                losses["edge_denoise"] = nn.CrossEntropyLoss()(pred, labels)
+            else:
+                true_edge = true_adj_dense[b_idx, i_idx, j_idx]
+                losses["edge_denoise"] = nn.BCEWithLogitsLoss()(
+                    pred.squeeze(-1), true_edge
+                )
         else:
             pair_mask = node_mask.unsqueeze(1) & node_mask.unsqueeze(2)
             non_diag = ~torch.eye(
