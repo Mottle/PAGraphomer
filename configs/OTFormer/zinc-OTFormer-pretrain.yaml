@@ -82,15 +82,15 @@ otformer:
     # Masked atom modeling ratio.
     atom_mask_ratio: 0.2
     # Motif-block masking ratio (component-level blocks).
-    motif_mask_ratio: 0.1
+    motif_mask_ratio: 0.2
     # Top-k frequent motif ids per graph considered for block masking.
-    motif_topk: 8
+    motif_topk: 4
     # Edge corruption ratio for denoising objective.
     edge_perturb_ratio: 0.2
     # Fallback pair sampling ratio when perturb pairs are unavailable.
     edge_sample_ratio: 0.1
     # Number of sampled negative undirected pairs per dropped pair.
-    edge_neg_ratio: 2.0
+    edge_neg_ratio: 1.0
     # Hard negative sampling: use SPD-based negatives instead of random.
     # Options: random | hard_spd | edge_type
     edge_denoise_mode: hard_spd
@@ -99,10 +99,10 @@ otformer:
     # Loss weights for joint objective:
     # L = w_mask_atom*L_mask_atom + w_motif_mask*L_motif_mask
     #   + w_edge_denoise*L_edge_denoise + w_ot_prior*L_ot_prior
-    w_mask_atom: 1.0
-    w_motif_mask: 0.35
+    w_mask_atom: 0.5
+    w_motif_mask: 1.0
     w_edge_denoise: 1.0
-    w_ot_prior: 1.0
+    w_ot_prior: 0.5
 gt:
   pna_degrees: []
   bigbird:
