@@ -11,6 +11,55 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch_geometric.graphgym.optim import SchedulerConfig
 import torch_geometric.graphgym.register as register
 
+from gps.optimizer.muon import Muon
+
+
+class _MuonHybridOptimizer(Optimizer):
+    """Wrapper combining Muon (2D params) and AdamW (non-2D params).
+
+    Muon only supports 2D weight matrices. Biases, layer norms, and
+    embeddings are handled by AdamW with a scaled learning rate.
+    """
+
+    def __init__(self, muon_opt, adamw_opt):
+        self.muon = muon_opt
+        self.adamw = adamw_opt
+        self.defaults = {}
+        self.state = {}
+        self._param_groups = None
+
+    def zero_grad(self, set_to_none=True):
+        self.muon.zero_grad(set_to_none=set_to_none)
+        if self.adamw:
+            self.adamw.zero_grad(set_to_none=set_to_none)
+
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+        self.muon.step()
+        if self.adamw:
+            self.adamw.step()
+        return loss
+
+    def state_dict(self):
+        return {
+            "muon": self.muon.state_dict(),
+            "adamw": self.adamw.state_dict() if self.adamw else None,
+        }
+
+    def load_state_dict(self, state):
+        self.muon.load_state_dict(state["muon"])
+        if self.adamw and state.get("adamw"):
+            self.adamw.load_state_dict(state["adamw"])
+
+    @property
+    def param_groups(self):
+        groups = list(self.muon.param_groups)
+        if self.adamw:
+            groups.extend(self.adamw.param_groups)
+        return groups
+
 
 @register.register_optimizer("adagrad")
 def adagrad_optimizer(
@@ -24,6 +73,23 @@ def adamW_optimizer(
     params: Iterator[Parameter], base_lr: float, weight_decay: float
 ) -> AdamW:
     return AdamW(params, lr=base_lr, weight_decay=weight_decay)
+
+
+@register.register_optimizer("muon_adamw")
+def muon_optimizer(
+    params: Iterator[Parameter], base_lr: float, weight_decay: float
+) -> _MuonHybridOptimizer:
+    param_list = list(params)
+    muon_params = [p for p in param_list if p.ndim == 2]
+    other_params = [p for p in param_list if p.ndim != 2]
+
+    muon_opt = Muon(muon_params, lr=base_lr, weight_decay=weight_decay)
+    adamw_opt = (
+        AdamW(other_params, lr=base_lr * 0.1, weight_decay=weight_decay)
+        if other_params
+        else None
+    )
+    return _MuonHybridOptimizer(muon_opt, adamw_opt)
 
 
 @dataclass

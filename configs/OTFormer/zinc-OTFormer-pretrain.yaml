@@ -121,7 +121,7 @@ gnn:
 optim:
   # Optimizer and LR schedule.
   clip_grad_norm: True
-  optimizer: adamW
+  optimizer: muon_adamw
   weight_decay: 5e-5
   base_lr: 0.0005
   max_epoch: 500
