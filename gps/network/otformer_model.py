@@ -1,3 +1,6 @@
+import random
+import warnings
+
 import torch
 import torch.nn as nn
 import torch_geometric.graphgym.register as register
@@ -96,6 +99,15 @@ class OTFormerModel(torch.nn.Module):
             self.edge_decoder = nn.Linear(dim_h, n_edge_types + 1)
         else:
             self.edge_decoder = nn.Linear(dim_h, 1)
+
+        self.ce_loss = nn.CrossEntropyLoss()
+        self.bce_loss = nn.BCEWithLogitsLoss()
+
+        if self.recycling_iters == 0 and len(self.blocks) > 0:
+            warnings.warn(
+                "recycling_iters=0 means Transformer blocks are never called. "
+                "Set recycling_iters >= 1 to enable the transformer."
+            )
 
         GNNHead = register.head_dict[cfg.gnn.head]
         self.post_mp = GNNHead(dim_in=dim_h, dim_out=dim_out)
@@ -215,6 +227,8 @@ class OTFormerModel(torch.nn.Module):
     def _perturb_edges(self, edge_index, edge_attr, node_batch):
         if edge_attr is not None:
             edge_attr = edge_attr.clone()
+        if node_batch.numel() == 0:
+            return edge_index, edge_attr, None
         ratio = cfg.otformer.pretrain.edge_perturb_ratio
         device = edge_index.device
         num_graphs = node_batch.max().item() + 1
@@ -429,7 +443,6 @@ class OTFormerModel(torch.nn.Module):
 
         if not candidates:
             return self._sample_random_negatives(nodes, forbidden, 10)
-        import random
 
         random.shuffle(candidates)
         return candidates
@@ -466,6 +479,7 @@ class OTFormerModel(torch.nn.Module):
         motif_id,
         true_adj_dense,
         perturbed_pairs,
+        edge_attr,
     ):
         losses = {}
         device = h_out.device
@@ -477,7 +491,7 @@ class OTFormerModel(torch.nn.Module):
             target_atom = _infer_atom_targets(raw_x).to(device)
             atom_logits = self.atom_decoder(h_out)
             if atom_mask.any():
-                losses["mask_atom"] = nn.CrossEntropyLoss()(
+                losses["mask_atom"] = self.ce_loss(
                     atom_logits[atom_mask], target_atom[atom_mask]
                 )
             else:
@@ -485,7 +499,7 @@ class OTFormerModel(torch.nn.Module):
 
         motif_logits = self.motif_decoder(h_out)
         if motif_block_mask.any():
-            losses["motif_mask"] = nn.CrossEntropyLoss()(
+            losses["motif_mask"] = self.ce_loss(
                 motif_logits[motif_block_mask], motif_id[motif_block_mask]
             )
         else:
@@ -504,12 +518,10 @@ class OTFormerModel(torch.nn.Module):
             pred = edge_logit_dense[b_idx, i_idx, j_idx]
 
             if denoise_mode == "edge_type" and edge_attr is not None:
-                losses["edge_denoise"] = nn.CrossEntropyLoss()(pred, labels)
+                losses["edge_denoise"] = self.ce_loss(pred, labels)
             else:
                 true_edge = true_adj_dense[b_idx, i_idx, j_idx]
-                losses["edge_denoise"] = nn.BCEWithLogitsLoss()(
-                    pred.squeeze(-1), true_edge
-                )
+                losses["edge_denoise"] = self.bce_loss(pred.squeeze(-1), true_edge)
         else:
             pair_mask = node_mask.unsqueeze(1) & node_mask.unsqueeze(2)
             non_diag = ~torch.eye(
@@ -529,7 +541,7 @@ class OTFormerModel(torch.nn.Module):
                 true_edge = true_adj_dense[
                     sampled[:, 0], sampled[:, 1], sampled[:, 2]
                 ].float()
-                losses["edge_denoise"] = nn.BCEWithLogitsLoss()(pred_edge, true_edge)
+                losses["edge_denoise"] = self.bce_loss(pred_edge, true_edge)
             else:
                 losses["edge_denoise"] = torch.tensor(0.0, device=device)
 
@@ -686,6 +698,7 @@ class OTFormerModel(torch.nn.Module):
                 motif_id=motif_id,
                 true_adj_dense=true_adj,
                 perturbed_pairs=perturb_pairs,
+                edge_attr=edge_attr_true,
             )
             batch.otformer_aux["losses_raw"] = losses
             batch.otformer_aux["losses"] = self._losses_by_mode(losses)

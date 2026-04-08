@@ -1,4 +1,5 @@
 import math
+import warnings
 
 import torch
 import torch.nn as nn
@@ -11,6 +12,9 @@ def sinkhorn_transport(cost, eps, n_iters, log_domain=True):
 
     Args:
         cost: [N, W, K] cost tensor.
+        eps: Entropy regularization parameter (>0).
+        n_iters: Number of Sinkhorn iterations (>=0).
+        log_domain: Whether to use log-domain for numerical stability.
     Returns:
         transport: [N, W, K] tensor.
     """
@@ -18,6 +22,11 @@ def sinkhorn_transport(cost, eps, n_iters, log_domain=True):
         raise ValueError(f"sinkhorn eps must be > 0, got {eps}")
     if n_iters < 0:
         raise ValueError(f"sinkhorn n_iters must be >= 0, got {n_iters}")
+    if n_iters == 0:
+        warnings.warn(
+            "sinkhorn_iters=0: Sinkhorn algorithm will not perform any iterations. "
+            "Transport matrix will be uniform. Set sinkhorn_iters >= 1 for meaningful results."
+        )
 
     n_nodes, n_paths, n_mem = cost.shape
     device = cost.device
@@ -79,6 +88,9 @@ class OTMotifMemory(nn.Module):
             log_domain=log_domain,
         )
         n_paths = path_repr.shape[1]
+        # Scale by n_paths so that the weighted sum is normalized
+        # per node: without this, nodes with more paths would have
+        # proportionally larger motif representations.
         projected = n_paths * torch.einsum("nwk,kd->nwd", transport, self.memory)
         node_motif = projected.mean(dim=1)
         node_motif = self.proj(node_motif)
