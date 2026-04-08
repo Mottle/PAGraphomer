@@ -1,5 +1,6 @@
 import random
 import warnings
+from collections import deque
 
 import torch
 import torch.nn as nn
@@ -373,15 +374,12 @@ class OTFormerModel(torch.nn.Module):
     def _sample_hard_negatives_spd(
         self, edge_keep, node_batch, g, nodes, forbidden, max_spd
     ):
-        """Sample negative pairs with SPD in [2, max_spd] as hard negatives.
+        """Sample negative pairs based on shortest-path distance (SPD).
 
-        Uses vectorized tensor ops (torch.triu + nonzero) instead of O(n^2)
-        Python nested loops for candidate extraction.
+        Uses multi-source BFS for O(V+E) memory instead of dense adjacency matrix.
+        Finds node pairs with 2 <= SPD <= max_spd that are not actual edges.
         """
         n = nodes.numel()
-        if n < 2:
-            return []
-
         mask = node_batch[edge_keep[0]] == g
         eids = mask.nonzero(as_tuple=False).flatten()
         if eids.numel() == 0:
@@ -406,28 +404,45 @@ class OTFormerModel(torch.nn.Module):
         if src_local.numel() == 0:
             return self._sample_random_negatives(nodes, forbidden, 10)
 
-        adj = torch.zeros((n, n), device=edge_keep.device, dtype=torch.bool)
-        adj[src_local, dst_local] = True
+        adj_list = [[] for _ in range(n)]
+        src_cpu = src_local.cpu().tolist()
+        dst_cpu = dst_local.cpu().tolist()
+        for s, d in zip(src_cpu, dst_cpu):
+            adj_list[s].append(d)
+            adj_list[d].append(s)
+
+        edge_set = set()
+        for s, d in zip(src_cpu, dst_cpu):
+            edge_set.add((min(s, d), max(s, d)))
 
         candidates = []
-        visited = adj.clone()
-        power = adj.clone().float()
-        for _ in range(2, max_spd + 1):
-            power = torch.mm(power, adj.float())
-            new_reachable = (power > 0) & ~visited
-            if new_reachable.any():
-                triu_mask = torch.triu(new_reachable, diagonal=1)
-                idx_i, idx_j = triu_mask.nonzero(as_tuple=False).T
-                if idx_i.numel() > 0:
-                    si_list = nodes[idx_i].tolist()
-                    dj_list = nodes[idx_j].tolist()
-                    for s, d in zip(si_list, dj_list):
-                        key = (s, d) if s <= d else (d, s)
-                        if key not in forbidden:
-                            candidates.append((s, d))
-            visited |= new_reachable
+        node_list = nodes.cpu().tolist()
+        for start in range(n):
             if len(candidates) >= 500:
                 break
+            dist = [-1] * n
+            dist[start] = 0
+            queue = deque([start])
+            while queue:
+                u = queue.popleft()
+                if dist[u] >= max_spd:
+                    continue
+                for v in adj_list[u]:
+                    if dist[v] != -1:
+                        continue
+                    dist[v] = dist[u] + 1
+                    if dist[v] >= 2:
+                        lo, hi = min(start, v), max(start, v)
+                        if (lo, hi) not in edge_set:
+                            s_g = node_list[lo]
+                            d_g = node_list[hi]
+                            key = (s_g, d_g)
+                            if key not in forbidden:
+                                candidates.append(key)
+                                forbidden.add(key)
+                                if len(candidates) >= 500:
+                                    break
+                    queue.append(v)
 
         if not candidates:
             return self._sample_random_negatives(nodes, forbidden, 10)
