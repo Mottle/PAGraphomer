@@ -26,3 +26,7 @@ def extended_optim_cfg(cfg):
     # Clip gradient norms while training
     cfg.optim.clip_grad_norm = False
     cfg.optim.clip_grad_norm_value = 1.0
+
+    # Muon optimizer settings (used when optimizer: muon_adamw)
+    cfg.optim.muon_momentum = 0.95
+    cfg.optim.muon_adjust_lr_fn = ""

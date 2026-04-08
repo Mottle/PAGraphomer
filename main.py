@@ -1,5 +1,6 @@
 import datetime
 import os
+from typing import Optional
 import torch
 import logging
 
@@ -58,12 +59,18 @@ torch.backends.cudnn.allow_tf32 = True  # Default True
 
 
 def new_optimizer_config(cfg):
-    return OptimizerConfig(
-        optimizer=cfg.optim.optimizer,
-        base_lr=cfg.optim.base_lr,
-        weight_decay=cfg.optim.weight_decay,
-        momentum=cfg.optim.momentum,
-    )
+    from dataclasses import dataclass
+
+    @dataclass
+    class _OptimizerConfig:
+        optimizer: str = cfg.optim.optimizer
+        base_lr: float = cfg.optim.base_lr
+        weight_decay: float = cfg.optim.weight_decay
+        momentum: float = cfg.optim.momentum
+        muon_momentum: float = getattr(cfg.optim, "muon_momentum", 0.95)
+        muon_adjust_lr_fn: Optional[str] = getattr(cfg.optim, "muon_adjust_lr_fn", None)
+
+    return _OptimizerConfig()
 
 
 def new_scheduler_config(cfg):

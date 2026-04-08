@@ -1,6 +1,6 @@
 import logging
 import math
-from typing import Iterator
+from typing import Iterator, Optional
 from dataclasses import dataclass
 
 import torch.optim as optim
@@ -77,15 +77,32 @@ def adamW_optimizer(
 
 @register.register_optimizer("muon_adamw")
 def muon_optimizer(
-    params: Iterator[Parameter], base_lr: float, weight_decay: float
+    params: Iterator[Parameter],
+    base_lr: float,
+    weight_decay: float,
+    muon_momentum: float = 0.95,
+    muon_adjust_lr_fn: Optional[str] = None,
 ) -> _MuonHybridOptimizer:
     param_list = list(params)
     muon_params = [p for p in param_list if p.ndim == 2]
     other_params = [p for p in param_list if p.ndim != 2]
 
-    muon_opt = Muon(muon_params, lr=base_lr, weight_decay=weight_decay)
+    # YACS config uses empty string for None defaults
+    adjust_fn = muon_adjust_lr_fn if muon_adjust_lr_fn else None
+
+    muon_opt = Muon(
+        muon_params,
+        lr=base_lr,
+        weight_decay=weight_decay,
+        momentum=muon_momentum,
+        adjust_lr_fn=adjust_fn,
+    )
+    if adjust_fn == "match_rms_adamw":
+        adamw_lr = base_lr
+    else:
+        adamw_lr = base_lr * 0.1
     adamw_opt = (
-        AdamW(other_params, lr=base_lr * 0.1, weight_decay=weight_decay)
+        AdamW(other_params, lr=adamw_lr, weight_decay=weight_decay)
         if other_params
         else None
     )

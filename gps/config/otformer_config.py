@@ -12,6 +12,7 @@ def set_cfg_otformer(cfg):
     cfg.otformer.dropout = 0.0
     cfg.otformer.attn_dropout = 0.0
     cfg.otformer.layer_norm = True
+    cfg.otformer.ffn_activation = "gelu"
     cfg.otformer.recycling_iters = 2
     cfg.otformer.detach_recycle = True
 
@@ -21,6 +22,7 @@ def set_cfg_otformer(cfg):
     cfg.otformer.rum.rw_length = 4
     cfg.otformer.rum.dropout = 0.0
     cfg.otformer.rum.binary = False
+    cfg.otformer.rum.output_softmax = True
 
     cfg.otformer.motif = CN()
     cfg.otformer.motif.memory_size = 64

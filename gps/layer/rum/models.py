@@ -17,6 +17,7 @@ class RUMModel(torch.nn.Module):
         temperature=0.1,
         self_supervise_weight=0.05,
         consistency_weight=0.01,
+        output_softmax: bool = True,
         **kwargs,
     ):
         super().__init__()
@@ -26,6 +27,7 @@ class RUMModel(torch.nn.Module):
         self.out_features = out_features
         self.hidden_features = hidden_features
         self.depth = depth
+        self.output_softmax = output_softmax
         self.layers = torch.nn.ModuleList()
         for _ in range(depth):
             self.layers.append(
@@ -47,11 +49,20 @@ class RUMModel(torch.nn.Module):
                 h = h.mean(0)
             h, _loss = layer(g, h, h0, e=e, subsample=subsample)
             loss = loss + self.self_supervise_weight * _loss
-        h = self.fc_out(h).softmax(-1)
-        if self.training:
-            _loss = self.consistency(h)
-            _loss = _loss * consistency_weight
-            loss = loss + _loss
+        h = self.fc_out(h)
+        if self.output_softmax:
+            h = h.softmax(-1)
+            if self.training:
+                _loss = self.consistency(h)
+                _loss = _loss * consistency_weight
+                loss = loss + _loss
+        else:
+            # L2 smoothness regularization (when softmax is disabled)
+            # Encourages path features to stay close to mean, penalizing high variance
+            if self.training:
+                _loss = ((h - h.mean(dim=0, keepdim=True)) ** 2).mean()
+                _loss = _loss * consistency_weight
+                loss = loss + _loss
         return h, loss
 
 

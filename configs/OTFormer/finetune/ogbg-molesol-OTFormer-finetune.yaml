@@ -37,6 +37,7 @@ otformer:
   dropout: 0.15
   attn_dropout: 0.2
   layer_norm: True
+  ffn_activation: gelu
   recycling_iters: 2
   detach_recycle: True
   rum:
@@ -45,6 +46,7 @@ otformer:
     rw_length: 4
     dropout: 0.0
     binary: False
+    output_softmax: False  # Disable softmax for OTFormer path features
   motif:
     memory_size: 64
     sinkhorn_eps: 0.1

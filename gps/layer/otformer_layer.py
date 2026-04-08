@@ -4,6 +4,7 @@ import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch_geometric.graphgym import register
 from torch_geometric.utils import to_dense_adj, to_dense_batch
 
 
@@ -109,6 +110,7 @@ class OTFormerBlock(nn.Module):
         layer_norm=True,
         use_triangle=True,
         triangle_hidden=32,
+        ffn_activation="gelu",
     ):
         super().__init__()
         if dim_h % num_heads != 0:
@@ -141,9 +143,10 @@ class OTFormerBlock(nn.Module):
             self.tri_out = nn.Linear(triangle_hidden, dim_h)
             self.tri_gate = nn.Linear(dim_h, dim_h)
 
+        act_fn = register.act_dict[ffn_activation]
         self.ffn = nn.Sequential(
             nn.Linear(dim_h, dim_h * 2),
-            nn.GELU(),
+            act_fn(),
             nn.Dropout(dropout),
             nn.Linear(dim_h * 2, dim_h),
         )

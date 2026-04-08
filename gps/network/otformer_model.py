@@ -66,6 +66,7 @@ class OTFormerModel(torch.nn.Module):
             dropout=cfg.otformer.rum.dropout,
             binary=cfg.otformer.rum.binary,
             self_supervise=False,
+            output_softmax=getattr(cfg.otformer.rum, "output_softmax", True),
         )
         self.ot_memory = OTMotifMemory(dim_h, cfg.otformer.motif.memory_size)
         self.motif_to_node = nn.Linear(dim_h, dim_h)
@@ -81,6 +82,7 @@ class OTFormerModel(torch.nn.Module):
                     layer_norm=cfg.otformer.layer_norm,
                     use_triangle=cfg.otformer.pair.use_triangle,
                     triangle_hidden=cfg.otformer.pair.triangle_hidden,
+                    ffn_activation=getattr(cfg.otformer, "ffn_activation", "gelu"),
                 )
                 for _ in range(cfg.otformer.layers)
             ]
@@ -235,7 +237,7 @@ class OTFormerModel(torch.nn.Module):
         edge_graph = node_batch[edge_index[0]]
         keep = torch.ones(edge_index.size(1), dtype=torch.bool, device=device)
         dropped_pairs_per_graph = {}
-        perturb_b, perturb_i, perturb_j, perturb_y = [], [], [], []
+        perturb_b_list, perturb_i_list, perturb_j_list, perturb_y_list = [], [], [], []
 
         for g in range(num_graphs):
             nodes = (node_batch == g).nonzero(as_tuple=False).flatten()
@@ -259,25 +261,15 @@ class OTFormerModel(torch.nn.Module):
                 d = int(edge_index[1, eid].item())
                 li, lj = local_idx[s], local_idx[d]
                 if s == d:
-                    perturb_b.append(torch.tensor([g], device=device, dtype=torch.long))
-                    perturb_i.append(
-                        torch.tensor([li], device=device, dtype=torch.long)
-                    )
-                    perturb_j.append(
-                        torch.tensor([lj], device=device, dtype=torch.long)
-                    )
-                    perturb_y.append(torch.ones(1, device=device, dtype=torch.long))
+                    perturb_b_list.append(g)
+                    perturb_i_list.append(li)
+                    perturb_j_list.append(lj)
+                    perturb_y_list.append(1)
                 else:
-                    perturb_b.append(
-                        torch.tensor([g, g], device=device, dtype=torch.long)
-                    )
-                    perturb_i.append(
-                        torch.tensor([li, lj], device=device, dtype=torch.long)
-                    )
-                    perturb_j.append(
-                        torch.tensor([lj, li], device=device, dtype=torch.long)
-                    )
-                    perturb_y.append(torch.ones(2, device=device, dtype=torch.long))
+                    perturb_b_list.extend([g, g])
+                    perturb_i_list.extend([li, lj])
+                    perturb_j_list.extend([lj, li])
+                    perturb_y_list.extend([1, 1])
 
         edge_keep = edge_index[:, keep]
         attr_keep = edge_attr[keep] if edge_attr is not None else None
@@ -342,14 +334,10 @@ class OTFormerModel(torch.nn.Module):
                 add_edge_type.extend([0, 0])
                 li = int((nodes == s).nonzero().item())
                 lj = int((nodes == d).nonzero().item())
-                perturb_b.append(torch.tensor([g, g], device=device, dtype=torch.long))
-                perturb_i.append(
-                    torch.tensor([li, lj], device=device, dtype=torch.long)
-                )
-                perturb_j.append(
-                    torch.tensor([lj, li], device=device, dtype=torch.long)
-                )
-                perturb_y.append(torch.zeros(2, device=device, dtype=torch.long))
+                perturb_b_list.extend([g, g])
+                perturb_i_list.extend([li, lj])
+                perturb_j_list.extend([lj, li])
+                perturb_y_list.extend([0, 0])
                 added += 1
 
         if add_src:
@@ -366,12 +354,12 @@ class OTFormerModel(torch.nn.Module):
             edge_corrupt = edge_keep
             attr_corrupt = attr_keep
 
-        if perturb_b:
+        if perturb_b_list:
             pairs = {
-                "b": torch.cat(perturb_b),
-                "i": torch.cat(perturb_i),
-                "j": torch.cat(perturb_j),
-                "y": torch.cat(perturb_y),
+                "b": torch.tensor(perturb_b_list, device=device, dtype=torch.long),
+                "i": torch.tensor(perturb_i_list, device=device, dtype=torch.long),
+                "j": torch.tensor(perturb_j_list, device=device, dtype=torch.long),
+                "y": torch.tensor(perturb_y_list, device=device, dtype=torch.long),
                 "edge_type": (
                     torch.tensor(add_edge_type, device=device, dtype=torch.long)
                     if add_edge_type
@@ -506,7 +494,9 @@ class OTFormerModel(torch.nn.Module):
             losses["motif_mask"] = torch.tensor(0.0, device=device)
 
         edge_logit_dense = self.edge_decoder(z_out)
-        true_adj_dense = ((true_adj_dense + true_adj_dense.transpose(1, 2)) > 0).float()
+        # to_dense_adj with undirected edges already produces a symmetric matrix;
+        # no need to re-symmetrize.
+        true_adj_dense = true_adj_dense.clamp(min=0.0, max=1.0)
 
         denoise_mode = getattr(cfg.otformer.pretrain, "edge_denoise_mode", "random")
 
@@ -608,10 +598,13 @@ class OTFormerModel(torch.nn.Module):
             )
 
         # Use perturbed graph for path extraction and OT matching.
-        batch_work = batch.clone()
-        batch_work.edge_index = edge_index_work
-        if edge_attr_true is not None:
-            batch_work.edge_attr = edge_attr_work
+        if pretrain_on:
+            batch_work = batch.clone()
+            batch_work.edge_index = edge_index_work
+            if edge_attr_true is not None:
+                batch_work.edge_attr = edge_attr_work
+        else:
+            batch_work = batch
 
         path_repr, _ = self.rum(
             batch_work, h_encoded, e=getattr(batch_work, "edge_attr", None)
