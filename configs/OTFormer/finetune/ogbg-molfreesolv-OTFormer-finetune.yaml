@@ -41,9 +41,9 @@ otformer:
   recycling_iters: 2
   detach_recycle: True
   rum:
-    depth: 2
-    num_samples: 8
-    rw_length: 4
+    depth: 1
+    num_samples: 12
+    rw_length: 8
     dropout: 0.0
     binary: False
     output_softmax: False  # Disable softmax for OTFormer path features
@@ -80,7 +80,7 @@ gnn:
   layers_post_mp: 3
   dim_inner: 128
   batchnorm: True
-  act: relu
+  act: gelu
   dropout: 0.1
   agg: mean
   normalize_adj: False
