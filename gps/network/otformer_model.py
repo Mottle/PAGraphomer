@@ -71,6 +71,7 @@ class OTFormerModel(torch.nn.Module):
         )
         self.ot_memory = OTMotifMemory(dim_h, cfg.otformer.motif.memory_size)
         self.motif_to_node = nn.Linear(dim_h, dim_h)
+        self.path_to_node = nn.Linear(dim_h, dim_h)
         self.edge_proj = nn.Linear(dim_h, dim_h)
 
         self.blocks = nn.ModuleList(
@@ -644,6 +645,7 @@ class OTFormerModel(torch.nn.Module):
             h_encoded.size(0), dtype=torch.bool, device=h_encoded.device
         )
         motif_block_mask = torch.zeros_like(atom_mask)
+        mask_union = atom_mask | motif_block_mask
         h_input = h_encoded
         if pretrain_on:
             atom_mask = (
@@ -659,7 +661,13 @@ class OTFormerModel(torch.nn.Module):
             h_input = h_encoded.clone()
             h_input[mask_union] = self.mask_token
 
-        h0 = h_input + self.motif_to_node(node_motif)
+        path_mean = path_repr.mean(dim=1)
+        if pretrain_on:
+            path_mean = path_mean.clone()
+            path_mean[mask_union] = self.mask_token
+            path_mean = path_mean.detach()
+
+        h0 = h_input + self.motif_to_node(node_motif) + self.path_to_node(path_mean)
 
         batch_work.x = h0
         z0, h_dense0, node_mask = build_pair_init(
