@@ -33,6 +33,14 @@ def set_cfg_otformer(cfg):
     cfg.otformer.pair = CN()
     cfg.otformer.pair.use_triangle = True
     cfg.otformer.pair.triangle_hidden = 32
+    # Precompute shortest-path distance (SPD) and inject into z0.
+    cfg.otformer.pair.use_spd = True
+    # Distances are clipped to this value during preprocessing.
+    cfg.otformer.pair.spd_max_dist = 16
+    # GRIT-style relative positional bias from RRWP for DTBlock attention logits.
+    cfg.otformer.pair.use_rrwp = False
+    cfg.otformer.pair.rrwp_attr_name = "rrwp"
+    cfg.otformer.pair.rrwp_dim = 0
 
     cfg.otformer.pretrain = CN()
     cfg.otformer.pretrain.enable = False

@@ -14,7 +14,7 @@ dataset:
   transductive: False
   # Node/edge encoders follow existing GraphGPS conventions.
   node_encoder: True
-  node_encoder_name: TypeDictNode+RWSE
+  node_encoder_name: TypeDictNode
   node_encoder_num_types: 28
   node_encoder_bn: False
   edge_encoder: True
@@ -22,13 +22,21 @@ dataset:
   edge_encoder_num_types: 4
   edge_encoder_bn: False
 posenc_RWSE:
-  # Random Walk Structural Encoding.
-  enable: True
+  # Disable node-level RWSE to keep RUM free from PE input.
+  enable: False
   kernel:
     times_func: range(1, 21)
   model: Linear
   dim_pe: 28
   raw_norm_type: BatchNorm
+posenc_RRWP:
+  # Precompute RRWP for GRIT-style pair bias in DTBlocks.
+  enable: True
+  walk_length: 8
+  add_identity: True
+  spd: False
+  attr_name_abs: rrwp
+  attr_name_rel: rrwp
 train:
   # Custom pretraining loop registered in gps/train/otformer_pretrain.py
   mode: otformer_pretrain
@@ -73,6 +81,11 @@ otformer:
     # 2D pair track updates.
     use_triangle: True
     triangle_hidden: 32
+    use_spd: True
+    spd_max_dist: 16
+    use_rrwp: True
+    rrwp_attr_name: rrwp
+    rrwp_dim: 8
   pretrain:
     # Enable OTFormer joint pretraining losses.
     enable: True
@@ -93,10 +106,11 @@ otformer:
     edge_sample_ratio: 0.1
     # Number of sampled negative undirected pairs per dropped pair.
     edge_neg_ratio: 1.0
-    # Hard negative sampling: use SPD-based negatives instead of random.
-    # Options: random | hard_spd | edge_type
-    edge_denoise_mode: hard_spd
-    # Max shortest-path distance for hard negative candidates.
+    # Edge denoising mode.
+    # Options: random | hard_spd | edge_type | reconstruct
+    #   reconstruct: mask edges and reconstruct original edge features (GraphMAE-style)
+    edge_denoise_mode: reconstruct
+    # Max shortest-path distance for hard negative candidates (hard_spd mode only).
     hard_neg_max_spd: 3
     # Loss weights for joint objective:
     # L = w_mask_atom*L_mask_atom + w_motif_mask*L_motif_mask
@@ -114,7 +128,7 @@ gnn:
   head: san_graph
   layers_pre_mp: 0
   layers_post_mp: 3
-  dim_inner: 128
+  dim_inner: 64
   batchnorm: True
   act: gelu
   dropout: 0.1

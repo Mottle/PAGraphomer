@@ -37,6 +37,7 @@ class TestOTFormerPretrain(ut.TestCase):
         cfg.gnn.dim_inner = 16
         cfg.gnn.layers_pre_mp = 0
         cfg.otformer.pretrain.enable = True
+        cfg.otformer.pretrain.edge_denoise_mode = "random"
         self.model = OTFormerModel(dim_in=16, dim_out=1)
 
     def test_motif_mask_ratio_zero_disables_block_mask(self):

@@ -43,13 +43,18 @@ class _MuonHybridOptimizer(Optimizer):
         return loss
 
     def state_dict(self):
+        muon_state = self.muon.state_dict()
         return {
-            "muon": self.muon.state_dict(),
+            "muon_adamw": muon_state,
+            "muon": muon_state,
             "adamw": self.adamw.state_dict() if self.adamw else None,
         }
 
     def load_state_dict(self, state):
-        self.muon.load_state_dict(state["muon"])
+        muon_state = state.get("muon_adamw")
+        if muon_state is None:
+            muon_state = state["muon"]
+        self.muon.load_state_dict(muon_state)
         if self.adamw and state.get("adamw"):
             self.adamw.load_state_dict(state["adamw"])
 

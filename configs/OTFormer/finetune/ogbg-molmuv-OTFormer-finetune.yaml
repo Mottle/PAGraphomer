@@ -55,6 +55,8 @@ otformer:
   pair:
     use_triangle: True
     triangle_hidden: 32
+    use_spd: True
+    spd_max_dist: 16
   pretrain:
     enable: False
   finetune:

@@ -111,6 +111,8 @@ class OTFormerBlock(nn.Module):
         use_triangle=True,
         triangle_hidden=32,
         ffn_activation="gelu",
+        use_rrwp=False,
+        rrwp_dim=0,
     ):
         super().__init__()
         if dim_h % num_heads != 0:
@@ -123,6 +125,7 @@ class OTFormerBlock(nn.Module):
         self.head_dim = dim_h // num_heads
         self.scale = 1.0 / math.sqrt(self.head_dim)
         self.use_triangle = use_triangle
+        self.use_rrwp = bool(use_rrwp)
         self.layer_norm = layer_norm
 
         self.q_proj = nn.Linear(dim_h, dim_h)
@@ -130,6 +133,12 @@ class OTFormerBlock(nn.Module):
         self.v_proj = nn.Linear(dim_h, dim_h)
         self.attn_out = nn.Linear(dim_h, dim_h)
         self.pair_bias = nn.Linear(dim_h, num_heads)
+        if self.use_rrwp:
+            if rrwp_dim <= 0:
+                raise ValueError(
+                    f"rrwp_dim must be > 0 when use_rrwp=True, got {rrwp_dim}"
+                )
+            self.rrwp_bias = nn.Linear(rrwp_dim, num_heads)
         self.dropout = nn.Dropout(dropout)
         self.attn_dropout = nn.Dropout(attn_dropout)
 
@@ -174,7 +183,15 @@ class OTFormerBlock(nn.Module):
         x = x.permute(0, 2, 1, 3).contiguous()
         return x.view(b, n, h * dh)
 
-    def forward(self, h, z, node_mask):
+    def forward(self, h, z, node_mask, rrwp_dense=None):
+        node_mask_f = node_mask.unsqueeze(-1).to(h.dtype)
+        pair_mask = node_mask.unsqueeze(1) & node_mask.unsqueeze(2)
+        pair_mask_f = pair_mask.unsqueeze(-1).to(z.dtype)
+
+        # Keep padded slots clean before any dense interaction.
+        h = h * node_mask_f
+        z = z * pair_mask_f
+
         # Pair -> Node biased attention
         h_in = h
         q = self._reshape_heads(self.q_proj(h))
@@ -183,14 +200,20 @@ class OTFormerBlock(nn.Module):
         scores = torch.einsum("bhid,bhjd->bhij", q, k) * self.scale
         bias = self.pair_bias(z).permute(0, 3, 1, 2)
         scores = scores + bias
+        if self.use_rrwp and rrwp_dense is not None:
+            rrwp_bias = self.rrwp_bias(rrwp_dense).permute(0, 3, 1, 2)
+            scores = scores + rrwp_bias
 
-        valid = node_mask.unsqueeze(1).unsqueeze(2)  # [B,1,1,N]
-        scores = scores.masked_fill(~valid, -1e4)
+        key_valid = node_mask.unsqueeze(1).unsqueeze(2)  # [B,1,1,N]
+        query_valid = node_mask.unsqueeze(1).unsqueeze(3)  # [B,1,N,1]
+        scores = scores.masked_fill(~key_valid, -1e4)
         attn = torch.softmax(scores, dim=-1)
+        attn = attn * query_valid.to(attn.dtype)
         attn = self.attn_dropout(attn)
         h_attn = torch.einsum("bhij,bhjd->bhid", attn, v)
         h_attn = self.attn_out(self._merge_heads(h_attn))
         h = self.norm_h1(h_in + self.dropout(h_attn))
+        h = h * node_mask_f
 
         # Node -> Pair update
         z_in = z
@@ -198,42 +221,95 @@ class OTFormerBlock(nn.Module):
         v2 = self.node_to_pair_v(h)
         pair_upd = u.unsqueeze(2) * v2.unsqueeze(1)
         pair_upd = self.node_to_pair_out(pair_upd)
+        pair_upd = pair_upd * pair_mask_f
         z = self.norm_z1(z_in + self.dropout(pair_upd))
+        z = z * pair_mask_f
 
         # Pair -> Pair triangle update
         if self.use_triangle:
             left = torch.sigmoid(self.tri_l(z))
             right = self.tri_r(z)
+            left = left * pair_mask_f.to(left.dtype)
+            right = right * pair_mask_f.to(right.dtype)
             tri = torch.einsum("bikc,bkjc->bijc", left, right) / max(z.shape[1], 1)
             tri = self.tri_out(tri)
             gate = torch.sigmoid(self.tri_gate(z))
             z = self.norm_z2(z + self.dropout(gate * tri))
+            z = z * pair_mask_f
 
         # Node FFN
         h = self.norm_h2(h + self.dropout(self.ffn(h)))
+        h = h * node_mask_f
 
         # Zero invalid padded positions
-        h = h * node_mask.unsqueeze(-1)
-        pair_mask = node_mask.unsqueeze(1) & node_mask.unsqueeze(2)
-        z = z * pair_mask.unsqueeze(-1)
+        h = h * node_mask_f
+        z = z * pair_mask_f
         return h, z
 
 
-def build_pair_init(batch, dim_h, edge_proj):
-    """Build dense pair tensor from edge attributes/adacency."""
+def build_pair_init(
+    batch,
+    dim_h,
+    edge_proj,
+    pair_init_proj,
+    use_spd=True,
+    spd_max_dist=16,
+    use_rrwp=False,
+    rrwp_attr_name="rrwp",
+    rrwp_dim=0,
+):
+    """Build dense pair tensor with bond features and optional SPD bias."""
     node_batch = batch.batch
     h = batch.x
     h_dense, node_mask = to_dense_batch(h, node_batch)
     bsz, nmax, _ = h_dense.shape
-    z = torch.zeros(bsz, nmax, nmax, dim_h, device=h.device, dtype=h.dtype)
+    bond_dense = torch.zeros(bsz, nmax, nmax, dim_h, device=h.device, dtype=h.dtype)
+    spd_dense = torch.zeros(bsz, nmax, nmax, 1, device=h.device, dtype=h.dtype)
+    rrwp_dense = None
 
     if getattr(batch, "edge_attr", None) is not None:
         edge_emb = edge_proj(batch.edge_attr)
         z_edge = to_dense_adj(
             batch.edge_index, batch=node_batch, edge_attr=edge_emb, max_num_nodes=nmax
         )
-        z = z + z_edge
+        bond_dense = bond_dense + z_edge
     else:
         adj = to_dense_adj(batch.edge_index, batch=node_batch, max_num_nodes=nmax)
-        z = z + adj.unsqueeze(-1)
-    return z, h_dense, node_mask
+        bond_dense[..., :1] = adj.unsqueeze(-1).to(h.dtype)
+
+    if use_spd and hasattr(batch, "ot_spd_index") and hasattr(batch, "ot_spd_val"):
+        spd_val = batch.ot_spd_val.to(h.device).to(h.dtype)
+        spd_norm = spd_val / float(max(spd_max_dist, 1))
+        spd_norm = spd_norm.clamp(min=0.0, max=1.0)
+        spd_matrix = to_dense_adj(
+            batch.ot_spd_index,
+            batch=node_batch,
+            edge_attr=spd_norm,
+            max_num_nodes=nmax,
+        )
+        spd_dense = spd_matrix.unsqueeze(-1)
+
+    if use_rrwp:
+        rrwp_index_name = f"{rrwp_attr_name}_index"
+        rrwp_val_name = f"{rrwp_attr_name}_val"
+        if hasattr(batch, rrwp_index_name) and hasattr(batch, rrwp_val_name):
+            rrwp_idx = getattr(batch, rrwp_index_name)
+            rrwp_val = getattr(batch, rrwp_val_name).to(h.device).to(h.dtype)
+            rrwp_dense = to_dense_adj(
+                rrwp_idx,
+                batch=node_batch,
+                edge_attr=rrwp_val,
+                max_num_nodes=nmax,
+            )
+        elif rrwp_dim > 0:
+            rrwp_dense = torch.zeros(
+                bsz, nmax, nmax, rrwp_dim, device=h.device, dtype=h.dtype
+            )
+        else:
+            raise ValueError(
+                "use_rrwp=True requires either precomputed RRWP attributes or rrwp_dim > 0"
+            )
+
+    z_in = torch.cat([bond_dense, spd_dense], dim=-1)
+    z = pair_init_proj(z_in)
+    return z, h_dense, node_mask, rrwp_dense

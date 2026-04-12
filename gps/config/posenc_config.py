@@ -10,6 +10,7 @@ def set_cfg_posenc(cfg):
     cfg.posenc_LapPE = CN()
     cfg.posenc_SignNet = CN()
     cfg.posenc_RWSE = CN()
+    cfg.posenc_RRWP = CN()
     cfg.posenc_HKdiagSE = CN()
     cfg.posenc_ElstaticSE = CN()
     cfg.posenc_EquivStableLapPE = CN()
@@ -89,3 +90,11 @@ def set_cfg_posenc(cfg):
 
     # Override default, electrostatic kernel has fixed set of 10 measures.
     cfg.posenc_ElstaticSE.kernel.times_func = "range(10)"
+
+    # Config for full-graph relative random walk positional encoding (RRWP).
+    cfg.posenc_RRWP.enable = False
+    cfg.posenc_RRWP.walk_length = 8
+    cfg.posenc_RRWP.add_identity = True
+    cfg.posenc_RRWP.spd = False
+    cfg.posenc_RRWP.attr_name_abs = "rrwp"
+    cfg.posenc_RRWP.attr_name_rel = "rrwp"

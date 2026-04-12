@@ -13,6 +13,7 @@ from torch_geometric.utils import (
 )
 from torch_geometric.utils.num_nodes import maybe_num_nodes
 from gps.encoder.graphormer_encoder import graphormer_pre_processing
+from gps.transform.rrwp import add_full_rrwp
 
 
 def compute_posenc_stats(data, pe_types, is_undirected, cfg):
@@ -43,6 +44,7 @@ def compute_posenc_stats(data, pe_types, is_undirected, cfg):
             "EquivStableLapPE",
             "SignNet",
             "RWSE",
+            "RRWP",
             "HKdiagSE",
             "HKfullPE",
             "ElstaticSE",
@@ -110,6 +112,17 @@ def compute_posenc_stats(data, pe_types, is_undirected, cfg):
             ksteps=kernel_param.times, edge_index=data.edge_index, num_nodes=N
         )
         data.pestat_RWSE = rw_landing
+
+    if "RRWP" in pe_types:
+        rrwp_cfg = cfg.posenc_RRWP
+        data = add_full_rrwp(
+            data,
+            walk_length=int(rrwp_cfg.walk_length),
+            attr_name_abs=rrwp_cfg.attr_name_abs,
+            attr_name_rel=rrwp_cfg.attr_name_rel,
+            add_identity=bool(rrwp_cfg.add_identity),
+            spd=bool(rrwp_cfg.spd),
+        )
 
     # Heat Kernels.
     if "HKdiagSE" in pe_types or "HKfullPE" in pe_types:
