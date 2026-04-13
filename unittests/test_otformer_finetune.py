@@ -270,6 +270,17 @@ class TestFinetuningUtils(ut.TestCase):
         with self.assertRaises(FileNotFoundError):
             get_final_pretrained_ckpt("/nonexistent/path/ckpt")
 
+    def test_get_final_pretrained_ckpt_supports_gps_snapshots(self):
+        with tempfile.TemporaryDirectory() as td:
+            pretrain_dir = Path(td) / "0" / "pretrain_weights"
+            pretrain_dir.mkdir(parents=True)
+            (pretrain_dir / "gps_epoch_0002.pt").touch()
+            (pretrain_dir / "gps_epoch_0007.pt").touch()
+            (pretrain_dir / "gps_epoch_0005.pt").touch()
+            ckpt_dir = Path(td) / "0" / "ckpt"
+            result = get_final_pretrained_ckpt(str(ckpt_dir))
+            self.assertEqual(result, str(pretrain_dir / "gps_epoch_0007.pt"))
+
     def test_compare_cfg_strict_raises(self):
         set_cfg(cfg)
         cfg.otformer.finetune.readout_dim = 32
@@ -289,6 +300,60 @@ class TestFinetuningUtils(ut.TestCase):
         other_cfg.otformer.finetune.readout_dim = 128
         with self.assertLogs(level="WARNING"):
             compare_cfg(cfg, other_cfg, "otformer.finetune.readout_dim", strict=False)
+
+    def test_load_pretrained_model_cfg_relaxes_encoder_check_for_gps_finetune(self):
+        set_cfg(cfg)
+        cfg.model.type = "GPSModel"
+        cfg.gps.pretrain.enable = False
+        cfg.gps.finetune.enable = True
+        cfg.dataset.node_encoder = True
+        cfg.dataset.node_encoder_name = "Atom+RWSE"
+        cfg.dataset.node_encoder_bn = False
+        cfg.dataset.edge_encoder = True
+        cfg.dataset.edge_encoder_name = "Bond"
+        cfg.dataset.edge_encoder_bn = False
+        cfg.gnn.head = "san_graph"
+        cfg.gnn.layers_post_mp = 3
+        cfg.gnn.act = "relu"
+        cfg.gnn.dropout = 0.0
+        cfg.gt = CfgNode()
+        cfg.gt.layer_type = "CustomGatedGCN+Transformer"
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg.pretrained.dir = td
+            config_path = Path(td) / "config.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "model:",
+                        "  type: GPSModel",
+                        "  graph_pooling: mean",
+                        "  edge_decoding: dot",
+                        "dataset:",
+                        "  node_encoder: true",
+                        "  node_encoder_name: TypeDictNode+RWSE",
+                        "  node_encoder_bn: false",
+                        "  edge_encoder: true",
+                        "  edge_encoder_name: TypeDictEdge",
+                        "  edge_encoder_bn: false",
+                        "gt:",
+                        "  layer_type: GINE+Transformer",
+                        "gnn:",
+                        "  head: san_graph",
+                        "  layers_post_mp: 3",
+                        "  act: relu",
+                        "  dropout: 0.0",
+                        "posenc_RWSE:",
+                        "  enable: true",
+                        "  dim_pe: 28",
+                        "  model: Linear",
+                    ]
+                )
+            )
+
+            loaded_cfg = load_pretrained_model_cfg(cfg)
+            self.assertEqual(loaded_cfg.gnn.head, "san_graph")
+            self.assertEqual(loaded_cfg.gt.layer_type, "GINE+Transformer")
 
 
 class TestInitModelFromPretrained(ut.TestCase):

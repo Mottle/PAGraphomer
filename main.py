@@ -178,7 +178,7 @@ if __name__ == "__main__":
         if cfg.pretrained.dir or cfg.pretrained.weights_path:
             cfg = load_pretrained_model_cfg(cfg)
         elif cfg.otformer.finetune.enable and not cfg.pretrained.dir:
-            zinc_dir = find_latest_zinc_pretrained_dir()
+            zinc_dir = find_latest_zinc_pretrained_dir(model_type="OTFormerModel")
             if zinc_dir:
                 logging.info(
                     f"[*] Auto-selected default ZINC pretrained model: {zinc_dir}. "
@@ -187,7 +187,7 @@ if __name__ == "__main__":
                 cfg.pretrained.dir = zinc_dir
                 cfg = load_pretrained_model_cfg(cfg)
             else:
-                auto_dir = find_latest_pretrained_dir()
+                auto_dir = find_latest_pretrained_dir(model_type="OTFormerModel")
                 if auto_dir:
                     logging.warning(
                         "[W] No ZINC pretraining run found under 'results/'. "
@@ -197,6 +197,28 @@ if __name__ == "__main__":
                 raise FileNotFoundError(
                     "OTFormer finetuning requires pretrained weights, but no "
                     "ZINC OTFormer pretraining was found in 'results/'. "
+                    "Set 'pretrained.dir' or 'pretrained.weights_path' manually."
+                )
+        elif cfg.gps.finetune.enable and not cfg.pretrained.dir:
+            zinc_dir = find_latest_zinc_pretrained_dir(model_type="GPSModel")
+            if zinc_dir:
+                logging.info(
+                    f"[*] Auto-selected default ZINC pretrained model: {zinc_dir}. "
+                    f"Set pretrained.dir/pretrained.weights_path to override."
+                )
+                cfg.pretrained.dir = zinc_dir
+                cfg = load_pretrained_model_cfg(cfg)
+            else:
+                auto_dir = find_latest_pretrained_dir(model_type="GPSModel")
+                if auto_dir:
+                    logging.warning(
+                        "[W] No ZINC pretraining run found under 'results/'. "
+                        "Latest GPS pretraining is: %s",
+                        auto_dir,
+                    )
+                raise FileNotFoundError(
+                    "GPS finetuning requires pretrained weights, but no "
+                    "ZINC GPS pretraining was found in 'results/'. "
                     "Set 'pretrained.dir' or 'pretrained.weights_path' manually."
                 )
         logging.info(
@@ -237,6 +259,11 @@ if __name__ == "__main__":
         elif cfg.otformer.finetune.enable:
             raise ValueError(
                 "OTFormer finetuning is enabled but pretrained weights are not "
+                "configured. Set 'pretrained.dir' or 'pretrained.weights_path'."
+            )
+        elif cfg.gps.finetune.enable:
+            raise ValueError(
+                "GPS finetuning is enabled but pretrained weights are not "
                 "configured. Set 'pretrained.dir' or 'pretrained.weights_path'."
             )
         optimizer = create_optimizer(model.parameters(), new_optimizer_config(cfg))

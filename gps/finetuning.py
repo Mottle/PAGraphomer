@@ -1,6 +1,7 @@
 import logging
 import os
 import os.path as osp
+import re
 from glob import glob
 import yaml
 
@@ -9,8 +10,18 @@ from torch_geometric.graphgym.config import set_cfg
 from yacs.config import CfgNode
 
 
-def _find_latest_pretrained_dir_filtered(base_dir="results", cfg_filter=None):
-    """Find latest OTFormer pretraining dir with an optional config filter."""
+def _is_pretrain_run(exp_cfg, model_type):
+    if model_type == "OTFormerModel":
+        return exp_cfg.get("otformer", {}).get("pretrain", {}).get("enable", False)
+    if model_type == "GPSModel":
+        return exp_cfg.get("gps", {}).get("pretrain", {}).get("enable", False)
+    return False
+
+
+def _find_latest_pretrained_dir_filtered(
+    base_dir="results", cfg_filter=None, model_type=None
+):
+    """Find latest pretrained dir with an optional config filter."""
     if not osp.exists(base_dir):
         return None
 
@@ -24,16 +35,15 @@ def _find_latest_pretrained_dir_filtered(base_dir="results", cfg_filter=None):
                 with open(cfg_file, "r") as f:
                     exp_cfg = yaml.safe_load(f)
 
-                model_type = exp_cfg.get("model", {}).get("type")
-                is_pretrain = (
-                    exp_cfg.get("otformer", {}).get("pretrain", {}).get("enable", False)
-                )
+                exp_model_type = exp_cfg.get("model", {}).get("type")
+                target_model_type = model_type or exp_model_type
+                is_pretrain = _is_pretrain_run(exp_cfg, target_model_type)
 
-                if model_type == "OTFormerModel" and is_pretrain:
+                if exp_model_type == target_model_type and is_pretrain:
                     if cfg_filter is not None and not cfg_filter(exp_cfg):
                         continue
                     # Check if any seed dir has either GraphGym ckpt (*.ckpt)
-                    # or OTFormer rolling pretrain weights (*.pt).
+                    # or rolling pretrain weights (*_epoch_XXXX.pt).
                     has_weights = False
                     for item in os.listdir(exp_path):
                         seed_dir = osp.join(exp_path, item)
@@ -47,8 +57,7 @@ def _find_latest_pretrained_dir_filtered(base_dir="results", cfg_filter=None):
                         )
                         has_pretrain_pt = (
                             osp.isdir(pretrain_dir)
-                            and len(glob(osp.join(pretrain_dir, "otformer_epoch_*.pt")))
-                            > 0
+                            and len(glob(osp.join(pretrain_dir, "*_epoch_*.pt"))) > 0
                         )
                         if has_graphgym_ckpt or has_pretrain_pt:
                             has_weights = True
@@ -68,17 +77,17 @@ def _find_latest_pretrained_dir_filtered(base_dir="results", cfg_filter=None):
     return candidates[0][1]
 
 
-def find_latest_pretrained_dir(base_dir="results"):
+def find_latest_pretrained_dir(base_dir="results", model_type="OTFormerModel"):
     """
-    Search for the latest OTFormer pretrained model directory.
-    Scans `base_dir` for experiments with `model.type: OTFormerModel`
-    and `otformer.pretrain.enable: True`.
+    Search for the latest pretrained model directory for the given model type.
     """
-    return _find_latest_pretrained_dir_filtered(base_dir=base_dir, cfg_filter=None)
+    return _find_latest_pretrained_dir_filtered(
+        base_dir=base_dir, cfg_filter=None, model_type=model_type
+    )
 
 
-def find_latest_zinc_pretrained_dir(base_dir="results"):
-    """Search for the latest OTFormer pretraining run on ZINC."""
+def find_latest_zinc_pretrained_dir(base_dir="results", model_type="OTFormerModel"):
+    """Search for the latest ZINC pretraining run for the given model type."""
 
     def _is_zinc(exp_cfg):
         dataset = exp_cfg.get("dataset", {})
@@ -89,7 +98,17 @@ def find_latest_zinc_pretrained_dir(base_dir="results"):
         # - PyG-ZINC configs where dataset.name is often "subset"
         return dataset_name == "zinc" or dataset_format == "pyg-zinc"
 
-    return _find_latest_pretrained_dir_filtered(base_dir=base_dir, cfg_filter=_is_zinc)
+    return _find_latest_pretrained_dir_filtered(
+        base_dir=base_dir, cfg_filter=_is_zinc, model_type=model_type
+    )
+
+
+def _epoch_key_from_path(path):
+    stem = osp.splitext(osp.basename(path))[0]
+    match = re.search(r"_epoch_(\d+)$", stem)
+    if match is None:
+        raise ValueError(f"Unexpected pretrained snapshot name: {path}")
+    return int(match.group(1))
 
 
 def get_final_pretrained_ckpt(ckpt_dir):
@@ -102,19 +121,13 @@ def get_final_pretrained_ckpt(ckpt_dir):
 
             return max(ckpt_files, key=_ckpt_epoch)
 
-    # Fallback: OTFormer pretraining rolling snapshots.
-    # Expected layout: {run_dir}/{seed}/pretrain_weights/otformer_epoch_XXXX.pt
+    # Fallback: rolling pretraining snapshots.
+    # Expected layout: {run_dir}/{seed}/pretrain_weights/*_epoch_XXXX.pt
     seed_dir = osp.dirname(ckpt_dir.rstrip("/"))
     pretrain_dir = osp.join(seed_dir, "pretrain_weights")
-    pretrain_files = glob(osp.join(pretrain_dir, "otformer_epoch_*.pt"))
+    pretrain_files = glob(osp.join(pretrain_dir, "*_epoch_*.pt"))
     if pretrain_files:
-
-        def _pt_epoch(path):
-            stem = osp.splitext(osp.basename(path))[0]
-            # otformer_epoch_0007 -> 7
-            return int(stem.split("_")[-1])
-
-        return max(pretrain_files, key=_pt_epoch)
+        return max(pretrain_files, key=_epoch_key_from_path)
 
     raise FileNotFoundError(
         f"No pretrained weights found under '{ckpt_dir}' or '{pretrain_dir}'."
@@ -179,8 +192,12 @@ def load_pretrained_model_cfg(cfg):
     compare_cfg(cfg, pretrained_cfg, "model.type", strict=True)
     compare_cfg(cfg, pretrained_cfg, "model.graph_pooling")
     compare_cfg(cfg, pretrained_cfg, "model.edge_decoding")
-    relax_dataset_encoder_check = cfg.model.type == "OTFormerModel" and bool(
-        getattr(cfg.otformer.finetune, "enable", False)
+    relax_dataset_encoder_check = (
+        cfg.model.type == "OTFormerModel"
+        and bool(getattr(cfg.otformer.finetune, "enable", False))
+    ) or (
+        cfg.model.type == "GPSModel"
+        and bool(getattr(cfg.gps.finetune, "enable", False))
     )
     compare_cfg(
         cfg,
