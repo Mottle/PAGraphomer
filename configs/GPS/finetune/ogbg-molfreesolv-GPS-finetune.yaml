@@ -1,4 +1,4 @@
-# OTFormer finetuning on ogbg-molesol (regression).
+# GPS finetuning on ogbg-molfreesolv using a backbone pretrained on ZINC.
 out_dir: results
 metric_best: mae
 metric_agg: argmin
@@ -6,22 +6,27 @@ wandb:
   use: False
 dataset:
   format: OGB
-  name: ogbg-molesol
+  name: ogbg-molfreesolv
   task: graph
   task_type: regression
   transductive: False
   split_mode: scaffold_balanced
   split: [0.8, 0.1, 0.1]
   node_encoder: True
-  node_encoder_name: Atom
-  node_encoder_num_types: 28
+  node_encoder_name: Atom+RWSE
   node_encoder_bn: False
   edge_encoder: True
   edge_encoder_name: Bond
-  edge_encoder_num_types: 4
   edge_encoder_bn: False
+posenc_RWSE:
+  enable: True
+  kernel:
+    times_func: range(1,17)
+  model: Linear
+  dim_pe: 16
+  raw_norm_type: BatchNorm
 train:
-  mode: otformer_finetune
+  mode: gps_finetune
   batch_size: 32
   eval_period: 1
   ckpt_period: 10
@@ -29,36 +34,11 @@ train:
   ckpt_best: True
   auto_resume: False
 model:
-  type: OTFormerModel
+  type: GPSModel
   loss_fun: mse_finetune
   edge_decoding: dot
   graph_pooling: mean
-otformer:
-  layers: 6
-  num_heads: 4
-  dropout: 0.15
-  attn_dropout: 0.2
-  layer_norm: True
-  ffn_activation: gelu
-  recycling_iters: 2
-  detach_recycle: True
-  rum:
-    depth: 1
-    num_samples: 12
-    rw_length: 8
-    dropout: 0.0
-    binary: False
-    output_softmax: False  # Disable softmax for OTFormer path features
-  motif:
-    memory_size: 64
-    sinkhorn_eps: 0.1
-    sinkhorn_iters: 5
-    log_domain: True
-  pair:
-    use_triangle: True
-    triangle_hidden: 32
-    use_spd: True
-    spd_max_dist: 16
+gps:
   pretrain:
     enable: False
   finetune:
@@ -68,24 +48,23 @@ otformer:
     backbone_lr_ratio: 0.05
     train_encoder_when_freeze_backbone: True
     encoder_lr_ratio: 1.0
-    readout_dim: 256
-    cls_hidden: 128
-    reg_hidden: 128
-    asl_gamma_pos: 1.0
-    asl_gamma_neg: 4.0
-    asl_clip: 0.05
 gt:
-  pna_degrees: []
-  bigbird:
-    attention_type: block_sparse
+  layer_type: CustomGatedGCN+Transformer
+  layers: 8
+  n_heads: 4
+  dim_hidden: 64
+  dropout: 0.05
+  attn_dropout: 0.5
+  layer_norm: False
+  batch_norm: True
 gnn:
-  head: otformer_finetune
+  head: san_graph
   layers_pre_mp: 0
   layers_post_mp: 3
   dim_inner: 64
   batchnorm: True
-  act: gelu
-  dropout: 0.1
+  act: relu
+  dropout: 0.0
   agg: mean
   normalize_adj: False
 pretrained:
@@ -97,7 +76,7 @@ pretrained:
 optim:
   clip_grad_norm: True
   optimizer: adamW
-  weight_decay: 0.05
+  weight_decay: 1e-5
   base_lr: 0.0001
   max_epoch: 100
   scheduler: cosine_with_warmup

@@ -21,6 +21,7 @@ dataset:
 pretrained:
   dir: pretrained/zinc-GPS+RWSE-ckptbest
   reset_prediction_head: False
+  load_encoder: True
 train:
   mode: inference-only
   batch_size: 32

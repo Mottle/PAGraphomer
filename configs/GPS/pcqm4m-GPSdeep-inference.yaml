@@ -19,6 +19,7 @@ dataset:
 pretrained:
   dir: pretrained/pcqm4m-GPS+RWSE.deep
   reset_prediction_head: False
+  load_encoder: True
 train:
   mode: PCQM4Mv2-inference
   batch_size: 256

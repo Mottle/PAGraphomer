@@ -1,6 +1,10 @@
 import json
 import logging
 import os
+import csv
+import gzip
+import random
+from collections import defaultdict
 
 import numpy as np
 from sklearn.model_selection import KFold, StratifiedKFold, ShuffleSplit
@@ -18,6 +22,8 @@ def prepare_splits(dataset):
 
     if split_mode == "standard":
         setup_standard_split(dataset)
+    elif split_mode == "scaffold_balanced":
+        setup_scaffold_balanced_split(dataset)
     elif split_mode == "random":
         setup_random_split(dataset)
     elif split_mode.startswith("cv-"):
@@ -29,6 +35,181 @@ def prepare_splits(dataset):
         setup_sliced_split(dataset)
     else:
         raise ValueError(f"Unknown split mode: {split_mode}")
+
+
+def _resolve_split_sizes(split_sizes, dataset_len):
+    if len(split_sizes) != 3:
+        raise ValueError(
+            f"Three split ratios are expected for train/val/test, received "
+            f"{len(split_sizes)} split ratios: {repr(split_sizes)}"
+        )
+
+    split_sum = sum(split_sizes)
+    if split_sum == 1:
+        train_size = int(split_sizes[0] * dataset_len)
+        val_size = int(split_sizes[1] * dataset_len)
+        test_size = int(split_sizes[2] * dataset_len)
+    elif split_sum == dataset_len:
+        train_size = int(split_sizes[0])
+        val_size = int(split_sizes[1])
+        test_size = int(split_sizes[2])
+    else:
+        raise ValueError(
+            "The train/val/test split ratios must sum to 1 or dataset length, "
+            f"got sum={split_sum} with split={repr(split_sizes)}"
+        )
+
+    if train_size + val_size + test_size > dataset_len:
+        raise ValueError(
+            "Resolved train/val/test split sizes exceed dataset length: "
+            f"{train_size + val_size + test_size} > {dataset_len}"
+        )
+
+    return train_size, val_size, test_size
+
+
+def _load_ogbg_mol_smiles(dataset):
+    if not hasattr(dataset, "name") or not str(dataset.name).startswith("ogbg-mol"):
+        raise ValueError(
+            "scaffold_balanced split is currently supported only for ogbg-mol* datasets"
+        )
+
+    root_dir = getattr(dataset, "root", None)
+    if root_dir is None:
+        raise ValueError("Dataset has no root directory; cannot locate raw smiles file")
+
+    candidate_paths = [
+        os.path.join(root_dir, "mapping", "mol.csv.gz"),
+        os.path.join(root_dir, "raw", "mapping", "mol.csv.gz"),
+        os.path.join(root_dir, "raw", "mol.csv.gz"),
+    ]
+
+    smiles_path = None
+    for path in candidate_paths:
+        if os.path.exists(path):
+            smiles_path = path
+            break
+
+    if smiles_path is None:
+        raise FileNotFoundError(
+            "Cannot find OGB smiles mapping file. Expected one of: "
+            f"{candidate_paths}"
+        )
+
+    smiles_list = []
+    with gzip.open(smiles_path, mode="rt", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if "smiles" in row:
+                smiles_list.append(row["smiles"])
+            else:
+                first_key = next(iter(row.keys()))
+                smiles_list.append(row[first_key])
+
+    if len(smiles_list) != len(dataset):
+        raise ValueError(
+            "Loaded smiles count does not match dataset length: "
+            f"{len(smiles_list)} vs {len(dataset)}"
+        )
+
+    return smiles_list
+
+
+def setup_scaffold_balanced_split(dataset):
+    """Generate scaffold-balanced train/val/test splits for OGB molecular datasets.
+
+    Mirrors Chemprop's scaffold_balanced strategy used by MotiL:
+    1) Group molecules by Bemis-Murcko scaffold.
+    2) Separate large scaffold groups (larger than half val/test target size).
+    3) Shuffle groups with cfg.seed and allocate groups to train, then val, then test.
+    """
+    if cfg.dataset.task != "graph":
+        raise ValueError("scaffold_balanced split supports graph-level datasets only")
+
+    try:
+        from rdkit import Chem
+        from rdkit.Chem.Scaffolds import MurckoScaffold
+    except Exception as e:
+        logging.warning(
+            "RDKit is unavailable, cannot compute seed-controlled scaffold_balanced split. "
+            "Falling back to standard split. "
+            "Install RDKit (e.g. `pixi add rdkit -e default`) to enable MotiL-style splitting. "
+            "Original import error: %s",
+            repr(e),
+        )
+        setup_standard_split(dataset)
+        return
+
+    split_sizes = cfg.dataset.split
+    train_size, val_size, test_size = _resolve_split_sizes(split_sizes, len(dataset))
+
+    smiles_list = _load_ogbg_mol_smiles(dataset)
+
+    scaffold_to_indices = defaultdict(list)
+    invalid_smiles = []
+    for idx, smiles in enumerate(smiles_list):
+        mol = Chem.MolFromSmiles(smiles)
+
+        if mol is None:
+            mol = Chem.MolFromSmiles(smiles, sanitize=False)
+
+        if mol is None:
+            invalid_smiles.append((idx, smiles))
+            scaffold = f"__invalid_scaffold_{idx}"
+        else:
+            try:
+                scaffold = MurckoScaffold.MurckoScaffoldSmiles(
+                    mol=mol, includeChirality=False
+                )
+            except Exception:
+                invalid_smiles.append((idx, smiles))
+                scaffold = f"__invalid_scaffold_{idx}"
+
+        scaffold_to_indices[scaffold].append(idx)
+
+    if invalid_smiles:
+        preview = ", ".join([f"{i}:{s}" for i, s in invalid_smiles[:3]])
+        logging.warning(
+            "scaffold_balanced split encountered %d invalid/unscaffoldable SMILES; "
+            "assigning each to its own scaffold bucket. Examples: %s",
+            len(invalid_smiles),
+            preview,
+        )
+
+    index_sets = list(scaffold_to_indices.values())
+    big_index_sets = []
+    small_index_sets = []
+    for index_set in index_sets:
+        if len(index_set) > val_size / 2 or len(index_set) > test_size / 2:
+            big_index_sets.append(index_set)
+        else:
+            small_index_sets.append(index_set)
+
+    random.seed(cfg.seed)
+    random.shuffle(big_index_sets)
+    random.shuffle(small_index_sets)
+    index_sets = big_index_sets + small_index_sets
+
+    train_index = []
+    val_index = []
+    test_index = []
+    for index_set in index_sets:
+        if len(train_index) + len(index_set) <= train_size:
+            train_index.extend(index_set)
+        elif len(val_index) + len(index_set) <= val_size:
+            val_index.extend(index_set)
+        else:
+            test_index.extend(index_set)
+
+    logging.info(
+        "Using scaffold_balanced split for %s with seed=%d: train=%d, val=%d, test=%d",
+        getattr(dataset, "name", "dataset"),
+        cfg.seed,
+        len(train_index),
+        len(val_index),
+        len(test_index),
+    )
+    set_dataset_splits(dataset, [train_index, val_index, test_index])
 
 
 def setup_standard_split(dataset):

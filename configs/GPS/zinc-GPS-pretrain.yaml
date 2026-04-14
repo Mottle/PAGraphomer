@@ -42,20 +42,20 @@ model:
 gps:
   pretrain:
     enable: True
-    eval_splits: True
+    eval_splits: False
     save_epoch_weights: True
     keep_last_epoch_weights: 3
-    mask_ratio: 0.15
-    edge_mask_ratio: 0.15
+    mask_ratio: 0.2
+    edge_mask_ratio: 0.2
     w_mask_atom: 1.0
     w_mask_edge: 1.0
 gt:
   layer_type: GINE+Transformer
-  layers: 10
+  layers: 8
   n_heads: 4
   dim_hidden: 64
-  dropout: 0.0
-  attn_dropout: 0.5
+  dropout: 0.1
+  attn_dropout: 0.3
   layer_norm: False
   batch_norm: True
 gnn:
@@ -65,14 +65,16 @@ gnn:
   dim_inner: 64
   batchnorm: True
   act: relu
-  dropout: 0.0
+  dropout: 0.1
   agg: mean
   normalize_adj: False
 optim:
   clip_grad_norm: True
-  optimizer: adamW
-  weight_decay: 1e-5
-  base_lr: 0.001
-  max_epoch: 2000
+  optimizer: muon_adamw
+  weight_decay: 0.05
+  base_lr: 0.0006
+  muon_momentum: 0.95
+  muon_adjust_lr_fn: match_rms_adamw
+  max_epoch: 600
   scheduler: cosine_with_warmup
-  num_warmup_epochs: 50
+  num_warmup_epochs: 40

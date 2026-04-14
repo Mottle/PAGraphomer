@@ -17,3 +17,7 @@ def set_cfg_pretrained(cfg):
     cfg.pretrained.reset_prediction_head = True
 
     cfg.pretrained.freeze_main = False
+
+    # Whether to load encoder parameters from pretrained checkpoint.
+    # Keep False by default for backward compatibility with existing runs.
+    cfg.pretrained.load_encoder = False

@@ -10,6 +10,8 @@ dataset:
   task: graph
   task_type: classification
   transductive: False
+  split_mode: scaffold_balanced
+  split: [0.8, 0.1, 0.1]
   node_encoder: True
   node_encoder_name: Atom+RWSE
   node_encoder_bn: False
@@ -48,7 +50,7 @@ gps:
     encoder_lr_ratio: 1.0
 gt:
   layer_type: CustomGatedGCN+Transformer
-  layers: 10
+  layers: 8
   n_heads: 4
   dim_hidden: 64
   dropout: 0.05
@@ -69,6 +71,7 @@ pretrained:
   dir: ""
   weights_path: ""
   reset_prediction_head: True
+  load_encoder: True
   freeze_main: False
 optim:
   clip_grad_norm: True

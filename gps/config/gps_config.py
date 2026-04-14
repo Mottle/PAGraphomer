@@ -10,7 +10,7 @@ def set_cfg_gps(cfg):
 
     cfg.gps.pretrain = CN()
     cfg.gps.pretrain.enable = False
-    cfg.gps.pretrain.eval_splits = True
+    cfg.gps.pretrain.eval_splits = False
     cfg.gps.pretrain.save_epoch_weights = True
     cfg.gps.pretrain.keep_last_epoch_weights = 3
     cfg.gps.pretrain.mask_ratio = 0.15

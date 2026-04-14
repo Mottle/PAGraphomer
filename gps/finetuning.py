@@ -274,6 +274,7 @@ def init_model_from_pretrained(
     pretrained_dir,
     freeze_main=False,
     reset_prediction_head=True,
+    load_encoder=False,
     seed=0,
     weights_path="",
 ):
@@ -286,6 +287,7 @@ def init_model_from_pretrained(
             of the ``main body`` (train the prediction head only), else train all.
         reset_prediction_head: If True, reset parameters of the prediction head,
             else keep the pretrained weights.
+        load_encoder: If True, allow loading encoder parameters from checkpoint.
         seed: Optionally, the training seed for default ckpt resolution.
         weights_path: If set, load weights from this exact .ckpt file path,
             bypassing the default ``{pretrained_dir}/{seed}/ckpt/`` resolution.
@@ -339,10 +341,11 @@ def init_model_from_pretrained(
         for k in list(pretrained_dict.keys()):
             pretrained_dict[f"model.{k}"] = pretrained_dict.pop(k)
 
-    # Ignore encoder weights for cross-dataset finetuning transfer.
-    pretrained_dict = {
-        k: v for k, v in pretrained_dict.items() if not _is_encoder_key(k)
-    }
+    if not load_encoder:
+        # Ignore encoder weights for cross-dataset finetuning transfer.
+        pretrained_dict = {
+            k: v for k, v in pretrained_dict.items() if not _is_encoder_key(k)
+        }
     if reset_prediction_head:
         pretrained_dict = {
             k: v for k, v in pretrained_dict.items() if not _is_prediction_head_key(k)
@@ -352,7 +355,7 @@ def init_model_from_pretrained(
         k
         for k in model_dict.keys()
         if (
-            (not _is_encoder_key(k))
+            ((not _is_encoder_key(k)) if not load_encoder else True)
             and ((not _is_prediction_head_key(k)) if reset_prediction_head else True)
         )
     ]
@@ -392,7 +395,10 @@ def init_model_from_pretrained(
         f"[*] Loaded {loaded_count} / {len(model_dict)} parameter groups "
         f"from {osp.basename(ckpt_file)}"
     )
-    logging.info("[*] Pretrained transfer policy: encoder parameters are ignored.")
+    logging.info(
+        "[*] Pretrained transfer policy: encoder parameters are %s.",
+        "loaded" if load_encoder else "ignored",
+    )
     if shape_mismatch:
         preview = ", ".join([item[0] for item in shape_mismatch[:5]])
         logging.warning(

@@ -171,8 +171,13 @@ def gps_pretrain_train(loggers, loaders, model, optimizer, scheduler):
     if cfg.train.auto_resume:
         start_epoch = load_ckpt(model, optimizer, scheduler, cfg.train.epoch_resume)
 
-    use_eval_splits = bool(getattr(cfg.gps.pretrain, "eval_splits", True))
-    num_splits = len(loggers)
+    use_eval_splits = (
+        bool(getattr(cfg.gps.pretrain, "eval_splits", False)) and len(loggers) > 1
+    )
+    active_loggers = list(loggers) if use_eval_splits else [loggers[0]]
+    active_loaders = list(loaders) if use_eval_splits else [loaders[0]]
+
+    num_splits = len(active_loggers)
     split_names = ["val", "test"]
     perf = [[] for _ in range(num_splits)]
     epoch_times = []
@@ -180,22 +185,25 @@ def gps_pretrain_train(loggers, loaders, model, optimizer, scheduler):
     for cur_epoch in range(start_epoch, cfg.optim.max_epoch):
         t0 = time.perf_counter()
         _train_epoch_pretrain(
-            loggers[0],
-            loaders[0],
+            active_loggers[0],
+            active_loaders[0],
             model,
             optimizer,
             scheduler,
             cfg.optim.batch_accumulation,
         )
-        perf[0].append(loggers[0].write_epoch(cur_epoch))
+        perf[0].append(active_loggers[0].write_epoch(cur_epoch))
 
         if use_eval_splits and is_eval_epoch(cur_epoch):
             for i in range(1, num_splits):
                 _eval_epoch_pretrain(
-                    loggers[i], loaders[i], model, split=split_names[i - 1]
+                    active_loggers[i],
+                    active_loaders[i],
+                    model,
+                    split=split_names[i - 1],
                 )
-                perf[i].append(loggers[i].write_epoch(cur_epoch))
-        else:
+                perf[i].append(active_loggers[i].write_epoch(cur_epoch))
+        elif use_eval_splits:
             for i in range(1, num_splits):
                 perf[i].append(perf[i][-1] if perf[i] else perf[0][-1])
 
@@ -245,7 +253,7 @@ def gps_pretrain_train(loggers, loaders, model, optimizer, scheduler):
                 )
 
     logging.info(f"Avg time per epoch: {np.mean(epoch_times):.2f}s")
-    for logger in loggers:
+    for logger in active_loggers:
         logger.close()
     if cfg.train.ckpt_clean:
         clean_ckpt()

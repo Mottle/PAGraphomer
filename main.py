@@ -236,6 +236,7 @@ if __name__ == "__main__":
                 cfg.pretrained.dir,
                 cfg.pretrained.freeze_main,
                 cfg.pretrained.reset_prediction_head,
+                cfg.pretrained.load_encoder,
                 seed=cfg.seed,
                 weights_path=cfg.pretrained.weights_path,
             )
