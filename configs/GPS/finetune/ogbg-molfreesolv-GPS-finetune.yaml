@@ -10,7 +10,8 @@ dataset:
   task: graph
   task_type: regression
   transductive: False
-  split_mode: scaffold_balanced
+  molecule_loader: motil_csv
+  split_mode: motil_scafford_balance
   split: [0.8, 0.1, 0.1]
   node_encoder: True
   node_encoder_name: Atom+RWSE

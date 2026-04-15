@@ -70,6 +70,10 @@ class OTFormerModel(torch.nn.Module):
         self.dim_h = dim_h
         self.recycling_iters = cfg.otformer.recycling_iters
         self.detach_recycle = cfg.otformer.detach_recycle
+        self.ablation_enable = bool(getattr(cfg.otformer.ablation, "enable", False))
+        self.disable_rum_ot = bool(
+            getattr(cfg.otformer.ablation, "disable_rum_ot", False)
+        )
 
         self.rum = RUMModel(
             in_features=dim_h,
@@ -653,7 +657,10 @@ class OTFormerModel(torch.nn.Module):
             else:
                 losses["edge_denoise"] = torch.tensor(0.0, device=device)
 
-        losses["ot_prior"] = (transport * cost).sum(dim=(1, 2)).mean()
+        if transport is None or cost is None:
+            losses["ot_prior"] = torch.tensor(0.0, device=device)
+        else:
+            losses["ot_prior"] = (transport * cost).sum(dim=(1, 2)).mean()
         return losses
 
     def _losses_by_mode(self, losses):
@@ -754,23 +761,30 @@ class OTFormerModel(torch.nn.Module):
         else:
             batch_work = batch
 
-        path_repr, _ = self.rum(
-            batch_work, h_encoded, e=getattr(batch_work, "edge_attr", None)
-        )
-        if path_repr.dim() != 3:
-            raise RuntimeError(
-                f"Expected 3D path tensor from RUM, got shape {path_repr.shape}"
+        if self.disable_rum_ot:
+            path_repr = None
+            node_motif = None
+            transport = None
+            cost = None
+            motif_id = None
+        else:
+            path_repr, _ = self.rum(
+                batch_work, h_encoded, e=getattr(batch_work, "edge_attr", None)
             )
-        # RUM returns [W, N, D]
-        path_repr = path_repr.transpose(0, 1).contiguous()
+            if path_repr.dim() != 3:
+                raise RuntimeError(
+                    f"Expected 3D path tensor from RUM, got shape {path_repr.shape}"
+                )
+            # RUM returns [W, N, D]
+            path_repr = path_repr.transpose(0, 1).contiguous()
 
-        node_motif, transport, cost = self.ot_memory(
-            path_repr,
-            sinkhorn_eps=cfg.otformer.motif.sinkhorn_eps,
-            sinkhorn_iters=cfg.otformer.motif.sinkhorn_iters,
-            log_domain=cfg.otformer.motif.log_domain,
-        )
-        motif_id = transport.mean(dim=1).argmax(dim=-1)
+            node_motif, transport, cost = self.ot_memory(
+                path_repr,
+                sinkhorn_eps=cfg.otformer.motif.sinkhorn_eps,
+                sinkhorn_iters=cfg.otformer.motif.sinkhorn_iters,
+                log_domain=cfg.otformer.motif.log_domain,
+            )
+            motif_id = transport.mean(dim=1).argmax(dim=-1)
 
         # Build pretraining masks: atom random mask + motif-connected block mask.
         atom_mask = torch.zeros(
@@ -779,7 +793,7 @@ class OTFormerModel(torch.nn.Module):
         motif_block_mask = torch.zeros_like(atom_mask)
         mask_union = atom_mask | motif_block_mask
         h_input = h_encoded
-        if pretrain_on:
+        if pretrain_on and not self.disable_rum_ot:
             atom_mask = (
                 torch.rand(h_encoded.shape[0], device=h_encoded.device)
                 < cfg.otformer.pretrain.atom_mask_ratio
@@ -792,14 +806,25 @@ class OTFormerModel(torch.nn.Module):
             mask_union = atom_mask | motif_block_mask
             h_input = h_encoded.clone()
             h_input[mask_union] = self.mask_token
+        elif pretrain_on and self.disable_rum_ot:
+            atom_mask = (
+                torch.rand(h_encoded.shape[0], device=h_encoded.device)
+                < cfg.otformer.pretrain.atom_mask_ratio
+            )
+            mask_union = atom_mask
+            h_input = h_encoded.clone()
+            h_input[mask_union] = self.mask_token
 
-        path_mean = path_repr.mean(dim=1)
-        if pretrain_on:
-            path_mean = path_mean.clone()
-            path_mean[mask_union] = self.mask_token
-            path_mean = path_mean.detach()
+        if self.disable_rum_ot:
+            h0 = h_input
+        else:
+            path_mean = path_repr.mean(dim=1)
+            if pretrain_on:
+                path_mean = path_mean.clone()
+                path_mean[mask_union] = self.mask_token
+                path_mean = path_mean.detach()
 
-        h0 = h_input + self.motif_to_node(node_motif) + self.path_to_node(path_mean)
+            h0 = h_input + self.motif_to_node(node_motif) + self.path_to_node(path_mean)
 
         batch_work.x = h0
         z0, h_dense0, node_mask, rrwp_dense = build_pair_init(
@@ -835,6 +860,7 @@ class OTFormerModel(torch.nn.Module):
             "motif_block_mask": motif_block_mask,
             "z_out": z,
             "node_mask": node_mask,
+            "disable_rum_ot": self.disable_rum_ot,
         }
         if getattr(cfg.otformer.pretrain, "enable", False):
             true_adj = to_dense_adj(

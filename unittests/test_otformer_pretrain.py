@@ -9,7 +9,10 @@ from torch_geometric.graphgym.config import cfg, load_cfg, set_cfg
 import gps  # noqa: F401, register modules
 from gps.layer.otformer_layer import sinkhorn_transport
 from gps.network.otformer_model import OTFormerModel
-from gps.train.otformer_pretrain import _save_epoch_weights_rolling
+from gps.train.otformer_pretrain import (
+    _load_latest_epoch_weights,
+    _save_epoch_weights_rolling,
+)
 
 
 class _Args:
@@ -284,6 +287,26 @@ class TestOTFormerPretrain(ut.TestCase):
                     "otformer_epoch_0004.pt",
                 ],
             )
+
+    def test_auto_resume_prefers_pretrain_weights_snapshot(self):
+        cfg.otformer.pretrain.save_epoch_weights = True
+        cfg.otformer.pretrain.keep_last_epoch_weights = 3
+        with tempfile.TemporaryDirectory() as td:
+            cfg.run_dir = td
+            model = OTFormerModel(dim_in=16, dim_out=1)
+            for epoch in range(3):
+                _save_epoch_weights_rolling(model, epoch)
+
+            for param in model.parameters():
+                param.data.zero_()
+
+            next_epoch = _load_latest_epoch_weights(model)
+            self.assertEqual(next_epoch, 3)
+
+            nonzero_found = any(
+                torch.count_nonzero(param).item() > 0 for param in model.parameters()
+            )
+            self.assertTrue(nonzero_found)
 
 
 if __name__ == "__main__":

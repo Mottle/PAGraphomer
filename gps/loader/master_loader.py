@@ -1,4 +1,5 @@
 import logging
+import os
 import os.path as osp
 import time
 from functools import partial
@@ -24,6 +25,7 @@ from torch_geometric.graphgym.register import register_loader
 from gps.loader.dataset.aqsol_molecules import AQSOL
 from gps.loader.dataset.coco_superpixels import COCOSuperpixels
 from gps.loader.dataset.malnet_tiny import MalNetTiny
+from gps.loader.dataset.motil_molecule_csv import MotiLMoleculeCSVDataset
 from gps.loader.dataset.voc_superpixels import VOCSuperpixels
 from gps.loader.split_generator import prepare_splits, set_dataset_splits
 from gps.transform.posenc_stats import compute_posenc_stats
@@ -350,6 +352,11 @@ def preformat_OGB_Graph(dataset_dir, name):
     Returns:
         PyG dataset object
     """
+    molecule_loader = getattr(cfg.dataset, "molecule_loader", "ogb")
+    if name.startswith("ogbg-mol") and molecule_loader == "motil_csv":
+        dataset = preformat_MotiL_MoleculeCSV(dataset_dir, name)
+        return dataset
+
     dataset = PygGraphPropPredDataset(name=name, root=dataset_dir)
     s_dict = dataset.get_idx_split()
     dataset.split_idxs = [s_dict[s] for s in ["train", "valid", "test"]]
@@ -399,6 +406,23 @@ def preformat_OGB_Graph(dataset_dir, name):
         # Subset graphs to a maximum size (number of nodes) limit.
         pre_transform_in_memory(dataset, partial(clip_graphs_to_size, size_limit=1000))
 
+    return dataset
+
+
+def preformat_MotiL_MoleculeCSV(dataset_dir, name):
+    dataset_key = name.replace("ogbg-mol", "")
+    csv_path = getattr(cfg.dataset, "external_smiles_csv", "")
+    if not csv_path:
+        csv_path = osp.join("datasets", "motil_micromolecule", f"{dataset_key}.csv")
+    if not osp.isabs(csv_path):
+        csv_path = osp.join(os.getcwd(), csv_path)
+
+    csv_root = osp.join(dataset_dir, f"MotiLCSV-{dataset_key}")
+    dataset = MotiLMoleculeCSVDataset(
+        root=csv_root,
+        csv_path=csv_path,
+        dataset_name=name,
+    )
     return dataset
 
 

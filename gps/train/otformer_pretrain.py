@@ -42,6 +42,33 @@ def _save_epoch_weights_rolling(model, epoch):
             os.remove(path)
 
 
+def _load_latest_epoch_weights(model):
+    """Resume OTFormer pretraining from latest epoch weight snapshot.
+
+    Priority order for resume is handled by caller:
+    1) latest `pretrain_weights/otformer_epoch_*.pt`
+    2) GraphGym checkpoint under `ckpt/`
+
+    Returns the next epoch index to run from.
+    """
+    pretrain_dir = os.path.join(cfg.run_dir, "pretrain_weights")
+    weight_paths = sorted(glob(os.path.join(pretrain_dir, "otformer_epoch_*.pt")))
+    if not weight_paths:
+        return None
+
+    latest_path = weight_paths[-1]
+    payload = torch.load(latest_path, map_location="cpu")
+    state_dict = payload.get("model_state_dict", payload)
+    epoch = int(payload.get("epoch", -1))
+    model.load_state_dict(state_dict, strict=True)
+    logging.info(
+        "[*] Resumed OTFormer pretraining model weights from %s (epoch=%d)",
+        latest_path,
+        epoch,
+    )
+    return epoch + 1
+
+
 def _train_epoch_pretrain(
     logger, loader, model, optimizer, scheduler, batch_accumulation
 ):
@@ -128,7 +155,12 @@ def _eval_epoch_pretrain(logger, loader, model, split="val"):
 def otformer_pretrain_train(loggers, loaders, model, optimizer, scheduler):
     start_epoch = 0
     if cfg.train.auto_resume:
-        start_epoch = load_ckpt(model, optimizer, scheduler, cfg.train.epoch_resume)
+        start_epoch = _load_latest_epoch_weights(model)
+        if start_epoch is None:
+            start_epoch = load_ckpt(model, optimizer, scheduler, cfg.train.epoch_resume)
+            logging.info(
+                "[*] No pretrain_weights snapshot found; fell back to GraphGym ckpt resume."
+            )
 
     use_eval_splits = bool(getattr(cfg.otformer.pretrain, "eval_splits", False))
     num_splits = len(loggers)
@@ -188,9 +220,9 @@ def otformer_pretrain_train(loggers, loaders, model, optimizer, scheduler):
                         clean_ckpt()
                 logging.info(
                     f"> Epoch {cur_epoch}: "
-                    f"train_loss={perf[0][cur_epoch]['loss']:.4f} "
-                    f"val_loss={perf[1][cur_epoch]['loss']:.4f} "
-                    f"test_loss={perf[2][cur_epoch]['loss']:.4f}"
+                    f"train_loss={perf[0][-1]['loss']:.4f} "
+                    f"val_loss={perf[1][-1]['loss']:.4f} "
+                    f"test_loss={perf[2][-1]['loss']:.4f}"
                 )
             else:
                 if cfg.train.enable_ckpt and cfg.train.ckpt_best:
@@ -200,7 +232,7 @@ def otformer_pretrain_train(loggers, loaders, model, optimizer, scheduler):
                         if cfg.train.ckpt_clean:
                             clean_ckpt()
                 logging.info(
-                    f"> Epoch {cur_epoch}: train_loss={perf[0][cur_epoch]['loss']:.4f}"
+                    f"> Epoch {cur_epoch}: train_loss={perf[0][-1]['loss']:.4f}"
                 )
 
     logging.info(f"Avg time per epoch: {np.mean(epoch_times):.2f}s")

@@ -1,4 +1,4 @@
-# OTFormer finetuning on ogbg-molclintox (extreme imbalanced multilabel classification).
+# OTFormer no-rum-ot finetuning on ogbg-moltox21 (multilabel classification).
 out_dir: results
 metric_best: ap
 metric_agg: argmax
@@ -6,7 +6,7 @@ wandb:
   use: False
 dataset:
   format: OGB
-  name: ogbg-molclintox
+  name: ogbg-moltox21
   task: graph
   task_type: classification_multilabel
   transductive: False
@@ -23,7 +23,7 @@ dataset:
   edge_encoder_bn: False
 train:
   mode: otformer_finetune
-  batch_size: 32
+  batch_size: 24
   eval_period: 1
   ckpt_period: 10
   enable_ckpt: True
@@ -49,7 +49,7 @@ otformer:
     rw_length: 8
     dropout: 0.0
     binary: False
-    output_softmax: False  # Disable softmax for OTFormer path features
+    output_softmax: False
   motif:
     memory_size: 64
     sinkhorn_eps: 0.1
@@ -65,7 +65,7 @@ otformer:
   finetune:
     enable: True
     freeze_backbone: True
-    freeze_backbone_epochs: 10
+    freeze_backbone_epochs: 20
     backbone_lr_ratio: 0.1
     train_encoder_when_freeze_backbone: True
     encoder_lr_ratio: 1.0
@@ -73,8 +73,12 @@ otformer:
     cls_hidden: 128
     reg_hidden: 128
     asl_gamma_pos: 1.0
-    asl_gamma_neg: 5.0
+    asl_gamma_neg: 3.0
     asl_clip: 0.05
+  ablation:
+    enable: True
+    disable_rum_ot: True
+    readout_variant: nohisto
 gt:
   pna_degrees: []
   bigbird:
@@ -86,11 +90,11 @@ gnn:
   dim_inner: 64
   batchnorm: True
   act: gelu
-  dropout: 0.1
+  dropout: 0.5
   agg: mean
   normalize_adj: False
 pretrained:
-  dir: results/zinc-OTFormer-pretrain
+  dir: results/zinc-OTFormer-pretrain-no-rum-ot
   weights_path: ""
   reset_prediction_head: True
   load_encoder: True
@@ -100,6 +104,6 @@ optim:
   optimizer: adamW
   weight_decay: 0.05
   base_lr: 0.0001
-  max_epoch: 100
+  max_epoch: 200
   scheduler: cosine_with_warmup
-  num_warmup_epochs: 5
+  num_warmup_epochs: 15

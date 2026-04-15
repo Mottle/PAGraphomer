@@ -80,3 +80,8 @@ def set_cfg_otformer(cfg):
     cfg.otformer.finetune.asl_gamma_pos = 1.0
     cfg.otformer.finetune.asl_gamma_neg = 4.0
     cfg.otformer.finetune.asl_clip = 0.05
+
+    cfg.otformer.ablation = CN()
+    cfg.otformer.ablation.enable = False
+    cfg.otformer.ablation.disable_rum_ot = False
+    cfg.otformer.ablation.readout_variant = "full"

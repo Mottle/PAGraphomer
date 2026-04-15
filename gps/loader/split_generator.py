@@ -24,6 +24,8 @@ def prepare_splits(dataset):
         setup_standard_split(dataset)
     elif split_mode == "scaffold_balanced":
         setup_scaffold_balanced_split(dataset)
+    elif split_mode == "motil_scafford_balance":
+        setup_motil_scafford_balance_split(dataset)
     elif split_mode == "random":
         setup_random_split(dataset)
     elif split_mode.startswith("cv-"):
@@ -110,6 +112,36 @@ def _load_ogbg_mol_smiles(dataset):
         raise ValueError(
             "Loaded smiles count does not match dataset length: "
             f"{len(smiles_list)} vs {len(dataset)}"
+        )
+
+    return smiles_list
+
+
+def _load_motil_csv_smiles(dataset):
+    csv_path = getattr(cfg.dataset, "external_smiles_csv", "")
+    if not csv_path:
+        dataset_name = getattr(dataset, "name", "")
+        csv_name = f"{str(dataset_name).replace('ogbg-mol', '')}.csv"
+        csv_path = os.path.join("datasets", "motil_micromolecule", csv_name)
+
+    if not os.path.isabs(csv_path):
+        csv_path = os.path.join(os.getcwd(), csv_path)
+
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"MotiL CSV file not found: {csv_path}")
+
+    smiles_list = []
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        next(reader, None)
+        for row in reader:
+            if row:
+                smiles_list.append(row[0])
+
+    if len(smiles_list) != len(dataset):
+        raise ValueError(
+            "MotiL CSV smiles count does not match dataset length: "
+            f"{len(smiles_list)} vs {len(dataset)} for {csv_path}"
         )
 
     return smiles_list
@@ -203,6 +235,92 @@ def setup_scaffold_balanced_split(dataset):
 
     logging.info(
         "Using scaffold_balanced split for %s with seed=%d: train=%d, val=%d, test=%d",
+        getattr(dataset, "name", "dataset"),
+        cfg.seed,
+        len(train_index),
+        len(val_index),
+        len(test_index),
+    )
+    set_dataset_splits(dataset, [train_index, val_index, test_index])
+
+
+def setup_motil_scafford_balance_split(dataset):
+    """MotiL-style scaffold balanced split using copied MotiL CSV source files.
+
+    This matches MotiL more closely by deriving scaffold groups from the copied
+    CSV files under `datasets/motil_micromolecule/`, instead of OGB mapping files.
+    The split policy itself remains Chemprop's balanced scaffold split.
+    """
+    if cfg.dataset.task != "graph":
+        raise ValueError(
+            "motil_scafford_balance split supports graph-level datasets only"
+        )
+
+    try:
+        from rdkit import Chem
+        from rdkit.Chem.Scaffolds import MurckoScaffold
+    except Exception as e:
+        logging.warning(
+            "RDKit is unavailable, cannot compute motil_scafford_balance split. "
+            "Falling back to standard split. Original import error: %s",
+            repr(e),
+        )
+        setup_standard_split(dataset)
+        return
+
+    split_sizes = cfg.dataset.split
+    train_size, val_size, test_size = _resolve_split_sizes(split_sizes, len(dataset))
+    smiles_list = _load_motil_csv_smiles(dataset)
+
+    scaffold_to_indices = defaultdict(list)
+    invalid_smiles = []
+    for idx, smiles in enumerate(smiles_list):
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            invalid_smiles.append((idx, smiles))
+            scaffold = f"__invalid_scaffold_{idx}"
+        else:
+            scaffold = MurckoScaffold.MurckoScaffoldSmiles(
+                mol=mol, includeChirality=False
+            )
+        scaffold_to_indices[scaffold].append(idx)
+
+    if invalid_smiles:
+        preview = ", ".join([f"{i}:{s}" for i, s in invalid_smiles[:3]])
+        logging.warning(
+            "motil_scafford_balance encountered %d invalid SMILES; assigning each "
+            "to its own scaffold bucket. Examples: %s",
+            len(invalid_smiles),
+            preview,
+        )
+
+    index_sets = list(scaffold_to_indices.values())
+    big_index_sets = []
+    small_index_sets = []
+    for index_set in index_sets:
+        if len(index_set) > val_size / 2 or len(index_set) > test_size / 2:
+            big_index_sets.append(index_set)
+        else:
+            small_index_sets.append(index_set)
+
+    random.seed(cfg.seed)
+    random.shuffle(big_index_sets)
+    random.shuffle(small_index_sets)
+    index_sets = big_index_sets + small_index_sets
+
+    train_index = []
+    val_index = []
+    test_index = []
+    for index_set in index_sets:
+        if len(train_index) + len(index_set) <= train_size:
+            train_index.extend(index_set)
+        elif len(val_index) + len(index_set) <= val_size:
+            val_index.extend(index_set)
+        else:
+            test_index.extend(index_set)
+
+    logging.info(
+        "Using motil_scafford_balance split for %s with seed=%d: train=%d, val=%d, test=%d",
         getattr(dataset, "name", "dataset"),
         cfg.seed,
         len(train_index),

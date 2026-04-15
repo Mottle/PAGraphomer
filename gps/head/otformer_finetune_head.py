@@ -13,9 +13,19 @@ class OTFormerFineTuneHead(nn.Module):
         dim_h = dim_in
         self.motif_size = cfg.otformer.motif.memory_size
         readout_dim = cfg.otformer.finetune.readout_dim
+        self.readout_variant = getattr(cfg.otformer.ablation, "readout_variant", "full")
 
-        # Unified readout: [mean(h)||max(h)||mean(z)||motif_hist] -> Linear + LN.
-        fusion_dim = (3 * dim_h) + self.motif_size
+        if self.readout_variant == "full":
+            fusion_dim = (3 * dim_h) + self.motif_size
+        elif self.readout_variant == "nohisto":
+            fusion_dim = 3 * dim_h
+        elif self.readout_variant == "node_only":
+            fusion_dim = 2 * dim_h
+        else:
+            raise ValueError(
+                "Unsupported OTFormer readout variant: " f"{self.readout_variant}"
+            )
+
         self.fusion = nn.Sequential(
             nn.Linear(fusion_dim, readout_dim),
             nn.LayerNorm(readout_dim),
@@ -85,21 +95,27 @@ class OTFormerFineTuneHead(nn.Module):
     def forward(self, batch):
         h_out = batch.x
         aux = batch.otformer_aux
-        transport = aux["transport"]
         z_out = aux["z_out"]
         node_mask = aux["node_mask"]
         batch_vec = batch.batch
 
-        r_ot = self._compute_ot_readout(transport, batch_vec)
         r_h = self._compute_node_readout(h_out, batch_vec)
-        r_z = self._compute_pair_readout(z_out, node_mask)
+        if self.readout_variant == "node_only":
+            graph_embed = self.fusion(r_h)
+        else:
+            r_z = self._compute_pair_readout(z_out, node_mask)
+            if self.readout_variant == "nohisto":
+                graph_embed = self.fusion(torch.cat([r_h, r_z], dim=-1))
+            else:
+                transport = aux["transport"]
+                r_ot = self._compute_ot_readout(transport, batch_vec)
+                graph_embed = self.fusion(torch.cat([r_h, r_z, r_ot], dim=-1))
+                aux["motif_hist_graph"] = r_ot
 
-        graph_embed = self.fusion(torch.cat([r_h, r_z, r_ot], dim=-1))
         logits = self.task_head(graph_embed)
         pred = logits
         if self.is_classification:
             batch.graph_pred_prob = self.output_activation(logits)
 
         batch.graph_feature = graph_embed
-        aux["motif_hist_graph"] = r_ot
         return pred, batch.y

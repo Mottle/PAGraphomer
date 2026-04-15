@@ -16,3 +16,11 @@ def dataset_cfg(cfg):
 
     # infer-link parameters (e.g., edge prediction task)
     cfg.dataset.infer_link_label = "None"
+
+    # Optional external CSV directory for custom scaffold split logic.
+    cfg.dataset.external_smiles_csv = ""
+
+    # Molecule dataset backend for ogbg-mol* tasks.
+    # - 'ogb': default PygGraphPropPredDataset loader
+    # - 'motil_csv': build dataset directly from copied MotiL CSV files
+    cfg.dataset.molecule_loader = "ogb"
