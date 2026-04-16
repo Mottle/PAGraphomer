@@ -29,6 +29,7 @@ from gps.loader.dataset.motil_molecule_csv import MotiLMoleculeCSVDataset
 from gps.loader.dataset.voc_superpixels import VOCSuperpixels
 from gps.loader.split_generator import prepare_splits, set_dataset_splits
 from gps.transform.posenc_stats import compute_posenc_stats
+from gps.transform.functional_groups import add_motil_functional_groups
 from gps.transform.task_preprocessing import task_specific_preprocessing
 from gps.transform.transforms import (
     pre_transform_in_memory,
@@ -213,6 +214,20 @@ def load_dataset_master(format, name, dataset_dir):
                     f"Parsed {pe_name} PE kernel times / steps: "
                     f"{pecfg.kernel.times}"
                 )
+    motil_fg_enabled = bool(getattr(cfg.grit.motil_pretrain, "enable", False))
+    feature_cache_key = None
+    if isinstance(dataset, MotiLMoleculeCSVDataset):
+        feature_cache_key = dataset.build_feature_cache_key(
+            pe_enabled_list, motil_fg_enabled
+        )
+        if dataset.load_feature_cache(feature_cache_key):
+            logging.info("Loaded cached MotiL RRWP/FG features from disk.")
+            cfg.grit.motil_pretrain.loaded_feature_cache = True
+            pe_enabled_list = []
+            motil_fg_enabled = False
+        else:
+            cfg.grit.motil_pretrain.loaded_feature_cache = False
+
     if pe_enabled_list:
         start = time.perf_counter()
         logging.info(
@@ -222,21 +237,60 @@ def load_dataset_master(format, name, dataset_dir):
         # Estimate directedness based on 10 graphs to save time.
         is_undirected = all(d.is_undirected() for d in dataset[:10])
         logging.info(f"  ...estimated to be undirected: {is_undirected}")
-        pre_transform_in_memory(
-            dataset,
-            partial(
-                compute_posenc_stats,
-                pe_types=pe_enabled_list,
-                is_undirected=is_undirected,
-                cfg=cfg,
-            ),
-            show_progress=True,
+        transform_func = partial(
+            compute_posenc_stats,
+            pe_types=pe_enabled_list,
+            is_undirected=is_undirected,
+            cfg=cfg,
         )
+        if motil_fg_enabled:
+            logging.info(
+                "Combining RRWP/statistics and MotiL functional-group "
+                "annotation into a single preprocessing pass."
+            )
+
+            def transform_with_functional_groups(data):
+                data = transform_func(data)
+                return add_motil_functional_groups(data)
+
+            pre_transform_in_memory(
+                dataset,
+                transform_with_functional_groups,
+                show_progress=True,
+            )
+        else:
+            pre_transform_in_memory(
+                dataset,
+                transform_func,
+                show_progress=True,
+            )
         elapsed = time.perf_counter() - start
         timestr = (
             time.strftime("%H:%M:%S", time.gmtime(elapsed)) + f"{elapsed:.2f}"[-3:]
         )
         logging.info(f"Done! Took {timestr}")
+        if feature_cache_key is not None:
+            dataset.save_feature_cache(feature_cache_key)
+            logging.info("Saved cached MotiL RRWP/FG features to disk.")
+            cfg.grit.motil_pretrain.loaded_feature_cache = True
+
+    if motil_fg_enabled and not pe_enabled_list:
+        logging.info(
+            "Precomputing MotiL functional-group annotations for all graphs..."
+        )
+        for attr in ["fg_atom_index", "fg_type_index", "fg_ptr", "fg_count"]:
+            if hasattr(dataset.data, attr):
+                delattr(dataset.data, attr)
+            if attr in dataset.slices:
+                del dataset.slices[attr]
+        dataset._data_list = None
+        pre_transform_in_memory(
+            dataset, add_motil_functional_groups, show_progress=True
+        )
+        if feature_cache_key is not None:
+            dataset.save_feature_cache(feature_cache_key)
+            logging.info("Saved cached MotiL RRWP/FG features to disk.")
+            cfg.grit.motil_pretrain.loaded_feature_cache = True
 
     # Set standard dataset train/val/test splits
     if hasattr(dataset, "split_idxs"):

@@ -420,24 +420,50 @@ def setup_random_split(dataset):
             f"sum up to {sum(split_ratios):.2f} instead: {repr(split_ratios)}"
         )
 
+    dataset_len = len(dataset)
+    train_size, val_size, test_size = _resolve_split_sizes(split_ratios, dataset_len)
+
+    if train_size == dataset_len and val_size == 0 and test_size == 0:
+        train_index = np.arange(dataset_len)
+        val_index = np.array([], dtype=np.int64)
+        test_index = np.array([], dtype=np.int64)
+        set_dataset_splits(dataset, [train_index, val_index, test_index])
+        return
+
     train_index, val_test_index = next(
         ShuffleSplit(train_size=split_ratios[0], random_state=cfg.seed).split(
             dataset.data.y, dataset.data.y
         )
     )
 
+    if len(val_test_index) == 0:
+        val_index = np.array([], dtype=np.int64)
+        test_index = np.array([], dtype=np.int64)
+        set_dataset_splits(dataset, [train_index, val_index, test_index])
+        return
+
     if isinstance(split_ratios[0], float):
         val_test_ratio = split_ratios[1] / (1 - split_ratios[0])
     else:
         val_test_ratio = split_ratios[1]
 
-    val_index, test_index = next(
-        ShuffleSplit(train_size=val_test_ratio, random_state=cfg.seed).split(
-            dataset.data.y[val_test_index], dataset.data.y[val_test_index]
+    if val_size == 0 and test_size == 0:
+        val_index = np.array([], dtype=np.int64)
+        test_index = np.array([], dtype=np.int64)
+    elif val_size == 0:
+        val_index = np.array([], dtype=np.int64)
+        test_index = val_test_index
+    elif test_size == 0:
+        val_index = val_test_index
+        test_index = np.array([], dtype=np.int64)
+    else:
+        val_index, test_index = next(
+            ShuffleSplit(train_size=val_test_ratio, random_state=cfg.seed).split(
+                dataset.data.y[val_test_index], dataset.data.y[val_test_index]
+            )
         )
-    )
-    val_index = val_test_index[val_index]
-    test_index = val_test_index[test_index]
+        val_index = val_test_index[val_index]
+        test_index = val_test_index[test_index]
 
     set_dataset_splits(dataset, [train_index, val_index, test_index])
 

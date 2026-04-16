@@ -1,9 +1,12 @@
 import csv
+import hashlib
+import json
 import os
 import os.path as osp
 
 import torch
 from ogb.utils import smiles2graph
+from torch_geometric.graphgym.config import cfg
 from torch_geometric.data import Data, InMemoryDataset
 
 
@@ -29,6 +32,41 @@ class MotiLMoleculeCSVDataset(InMemoryDataset):
         self.name = dataset_name
         super().__init__(root, transform, pre_transform, pre_filter)
         self.data, self.slices = torch.load(self.processed_paths[0])
+
+    def get_feature_cache_path(self, cache_key):
+        digest = hashlib.md5(cache_key.encode("utf-8")).hexdigest()[:12]
+        return osp.join(self.processed_dir, f"feature_cache_{digest}.pt")
+
+    def load_feature_cache(self, cache_key):
+        path = self.get_feature_cache_path(cache_key)
+        if not osp.exists(path):
+            return False
+        self.data, self.slices = torch.load(path, weights_only=False)
+        self._indices = None
+        self._data_list = None
+        return True
+
+    def save_feature_cache(self, cache_key):
+        path = self.get_feature_cache_path(cache_key)
+        torch.save((self.data, self.slices), path)
+
+    def build_feature_cache_key(self, pe_enabled_list, motil_fg_enabled):
+        payload = {
+            "dataset_name": self.dataset_name,
+            "csv_path": osp.abspath(self.csv_path),
+            "pe_enabled_list": list(pe_enabled_list),
+            "motil_fg_enabled": bool(motil_fg_enabled),
+        }
+        if "RRWP" in pe_enabled_list:
+            payload["rrwp"] = {
+                "ksteps": int(getattr(cfg.posenc_RRWP, "ksteps", 0)),
+                "walk_length": int(getattr(cfg.posenc_RRWP, "walk_length", 0)),
+                "add_identity": bool(getattr(cfg.posenc_RRWP, "add_identity", False)),
+                "spd": bool(getattr(cfg.posenc_RRWP, "spd", False)),
+                "attr_name_abs": str(getattr(cfg.posenc_RRWP, "attr_name_abs", "rrwp")),
+                "attr_name_rel": str(getattr(cfg.posenc_RRWP, "attr_name_rel", "rrwp")),
+            }
+        return json.dumps(payload, sort_keys=True)
 
     @property
     def raw_file_names(self):

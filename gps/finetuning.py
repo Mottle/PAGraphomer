@@ -15,6 +15,11 @@ def _is_pretrain_run(exp_cfg, model_type):
         return exp_cfg.get("otformer", {}).get("pretrain", {}).get("enable", False)
     if model_type == "GPSModel":
         return exp_cfg.get("gps", {}).get("pretrain", {}).get("enable", False)
+    if model_type == "GritTransformer":
+        grit_cfg = exp_cfg.get("grit", {})
+        return grit_cfg.get("pretrain", {}).get("enable", False) or grit_cfg.get(
+            "motil_pretrain", {}
+        ).get("enable", False)
     return False
 
 
@@ -93,10 +98,16 @@ def find_latest_zinc_pretrained_dir(base_dir="results", model_type="OTFormerMode
         dataset = exp_cfg.get("dataset", {})
         dataset_name = str(dataset.get("name", "")).lower()
         dataset_format = str(dataset.get("format", "")).lower()
+        external_smiles_csv = str(dataset.get("external_smiles_csv", "")).lower()
         # Support both:
         # - dataset.name: zinc
         # - PyG-ZINC configs where dataset.name is often "subset"
-        return dataset_name == "zinc" or dataset_format == "pyg-zinc"
+        return (
+            dataset_name == "zinc"
+            or "zinc" in dataset_name
+            or dataset_format == "pyg-zinc"
+            or "zinc" in external_smiles_csv
+        )
 
     return _find_latest_pretrained_dir_filtered(
         base_dir=base_dir, cfg_filter=_is_zinc, model_type=model_type
@@ -187,17 +198,25 @@ def load_pretrained_model_cfg(cfg):
         "GPSModel",
         "Graphormer",
         "OTFormerModel",
+        "GritTransformer",
     ], f"Fine-tuning regime is untested for model type: {cfg.model.type}"
 
     compare_cfg(cfg, pretrained_cfg, "model.type", strict=True)
     compare_cfg(cfg, pretrained_cfg, "model.graph_pooling")
     compare_cfg(cfg, pretrained_cfg, "model.edge_decoding")
     relax_dataset_encoder_check = (
-        cfg.model.type == "OTFormerModel"
-        and bool(getattr(cfg.otformer.finetune, "enable", False))
-    ) or (
-        cfg.model.type == "GPSModel"
-        and bool(getattr(cfg.gps.finetune, "enable", False))
+        (
+            cfg.model.type == "OTFormerModel"
+            and bool(getattr(cfg.otformer.finetune, "enable", False))
+        )
+        or (
+            cfg.model.type == "GPSModel"
+            and bool(getattr(cfg.gps.finetune, "enable", False))
+        )
+        or (
+            cfg.model.type == "GritTransformer"
+            and not bool(getattr(cfg.grit.pretrain, "enable", False))
+        )
     )
     compare_cfg(
         cfg,
@@ -243,6 +262,10 @@ def load_pretrained_model_cfg(cfg):
         compare_cfg(cfg, pretrained_cfg, "otformer.layers", strict=False)
         compare_cfg(cfg, pretrained_cfg, "otformer.rum.depth", strict=False)
         compare_cfg(cfg, pretrained_cfg, "otformer.rum.num_samples", strict=False)
+    elif cfg.model.type == "GritTransformer":
+        compare_cfg(cfg, pretrained_cfg, "gnn.dim_inner", strict=True)
+        compare_cfg(cfg, pretrained_cfg, "gt.n_heads", strict=True)
+        compare_cfg(cfg, pretrained_cfg, "gt.layer_type", strict=True)
 
     # Copy over all PE/SE configs
     for key in cfg.keys():

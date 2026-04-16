@@ -115,9 +115,12 @@ def compute_posenc_stats(data, pe_types, is_undirected, cfg):
 
     if "RRWP" in pe_types:
         rrwp_cfg = cfg.posenc_RRWP
+        walk_length = int(
+            getattr(rrwp_cfg, "ksteps", getattr(rrwp_cfg, "walk_length", 8))
+        )
         data = add_full_rrwp(
             data,
-            walk_length=int(rrwp_cfg.walk_length),
+            walk_length=walk_length,
             attr_name_abs=rrwp_cfg.attr_name_abs,
             attr_name_rel=rrwp_cfg.attr_name_rel,
             add_identity=bool(rrwp_cfg.add_identity),

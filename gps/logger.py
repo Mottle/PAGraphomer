@@ -264,8 +264,11 @@ class CustomLogger(Logger):
     def write_epoch(self, cur_epoch):
         start_time = time.perf_counter()
         basic_stats = self.basic()
+        has_predictions = len(self._true) > 0 and len(self._pred) > 0
 
-        if self.task_type == "regression":
+        if not has_predictions:
+            task_stats = {}
+        elif self.task_type == "regression":
             task_stats = self.regression()
         elif self.task_type == "classification_binary":
             task_stats = self.classification_binary()

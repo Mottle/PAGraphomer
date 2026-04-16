@@ -1,0 +1,100 @@
+# GRIT finetuning on ogbg-molesol using the ZINC MotiL-style pretrained backbone.
+out_dir: results
+metric_best: mae
+metric_agg: argmin
+wandb:
+  use: False
+dataset:
+  format: OGB
+  name: ogbg-molesol
+  task: graph
+  task_type: regression
+  transductive: False
+  molecule_loader: ogb
+  external_smiles_csv: datasets/motil_micromolecule/esol.csv
+  split_mode: motil_scafford_balance
+  split: [0.8, 0.1, 0.1]
+  node_encoder: True
+  node_encoder_name: Atom
+  node_encoder_num_types: 28
+  node_encoder_bn: False
+  edge_encoder: True
+  edge_encoder_name: Bond
+  edge_encoder_num_types: 4
+  edge_encoder_bn: False
+posenc_RRWP:
+  enable: True
+  ksteps: 11
+  walk_length: 11
+  add_identity: True
+  add_node_attr: False
+  add_inverse: False
+  spd: False
+  attr_name_abs: rrwp
+  attr_name_rel: rrwp
+train:
+  mode: grit_finetune
+  batch_size: 32
+  eval_period: 1
+  ckpt_period: 10
+  enable_ckpt: True
+  ckpt_best: True
+  auto_resume: False
+model:
+  type: GritTransformer
+  loss_fun: mse_finetune
+  edge_decoding: dot
+  graph_pooling: mean
+grit:
+  pretrain:
+    enable: False
+  motil_pretrain:
+    enable: False
+  finetune:
+    enable: True
+    freeze_backbone: True
+    freeze_backbone_epochs: 10
+    backbone_lr_ratio: 0.1
+    train_encoder_when_freeze_backbone: True
+    encoder_lr_ratio: 1.0
+gt:
+  layer_type: GritTransformer
+  layers: 8
+  n_heads: 4
+  dim_hidden: 32
+  dropout: 0.0
+  layer_norm: False
+  batch_norm: True
+  update_e: True
+  attn_dropout: 0.2
+  attn:
+    clamp: 5.0
+    act: gelu
+    full_attn: True
+    edge_enhance: True
+    O_e: True
+    norm_e: True
+gnn:
+  head: san_graph
+  layers_pre_mp: 0
+  layers_post_mp: 3
+  dim_inner: 32
+  batchnorm: True
+  act: gelu
+  dropout: 0.0
+  agg: mean
+  normalize_adj: False
+pretrained:
+  dir: results/zinc-GRIT-RRWP-motil-pretrain
+  weights_path: ""
+  reset_prediction_head: True
+  load_encoder: True
+  freeze_main: False
+optim:
+  clip_grad_norm: True
+  optimizer: adamW
+  weight_decay: 1e-5
+  base_lr: 0.0001
+  max_epoch: 100
+  scheduler: cosine_with_warmup
+  num_warmup_epochs: 5

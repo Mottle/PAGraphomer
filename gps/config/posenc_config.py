@@ -94,7 +94,10 @@ def set_cfg_posenc(cfg):
     # Config for full-graph relative random walk positional encoding (RRWP).
     cfg.posenc_RRWP.enable = False
     cfg.posenc_RRWP.walk_length = 8
+    cfg.posenc_RRWP.ksteps = 8
     cfg.posenc_RRWP.add_identity = True
+    cfg.posenc_RRWP.add_node_attr = False
+    cfg.posenc_RRWP.add_inverse = False
     cfg.posenc_RRWP.spd = False
     cfg.posenc_RRWP.attr_name_abs = "rrwp"
     cfg.posenc_RRWP.attr_name_rel = "rrwp"
