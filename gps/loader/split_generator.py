@@ -4,12 +4,14 @@ import os
 import csv
 import gzip
 import random
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 import numpy as np
 from sklearn.model_selection import KFold, StratifiedKFold, ShuffleSplit
 from torch_geometric.graphgym.config import cfg
 from torch_geometric.graphgym.loader import index2mask, set_dataset_attr
+
+from gps.loader.dataset.motil_molecule_csv import MotiLMoleculeCSVDataset
 
 
 def prepare_splits(dataset):
@@ -118,6 +120,9 @@ def _load_ogbg_mol_smiles(dataset):
 
 
 def _load_motil_csv_smiles(dataset):
+    if isinstance(dataset, MotiLMoleculeCSVDataset):
+        return [dataset[i].smiles for i in range(len(dataset))]
+
     csv_path = getattr(cfg.dataset, "external_smiles_csv", "")
     if not csv_path:
         dataset_name = getattr(dataset, "name", "")
@@ -139,12 +144,71 @@ def _load_motil_csv_smiles(dataset):
                 smiles_list.append(row[0])
 
     if len(smiles_list) != len(dataset):
+        if hasattr(dataset, "name") and str(dataset.name).startswith("ogbg-mol"):
+            ref_smiles = _load_ogbg_mol_smiles(dataset)
+            ref_counter = Counter(ref_smiles)
+            aligned_smiles = []
+            dropped_smiles = []
+
+            for smiles in smiles_list:
+                if ref_counter[smiles] > 0:
+                    aligned_smiles.append(smiles)
+                    ref_counter[smiles] -= 1
+                else:
+                    dropped_smiles.append(smiles)
+
+            aligned_counter = Counter(aligned_smiles)
+            missing_smiles = []
+            for smiles in ref_smiles:
+                if aligned_counter[smiles] > 0:
+                    aligned_counter[smiles] -= 1
+                else:
+                    missing_smiles.append(smiles)
+
+            if aligned_smiles == ref_smiles:
+                preview = ", ".join(dropped_smiles[:3]) if dropped_smiles else "n/a"
+                logging.warning(
+                    "Aligned external MotiL CSV smiles to OGB dataset order for %s; "
+                    "dropped %d unmatched CSV rows. Examples: %s",
+                    getattr(dataset, "name", "dataset"),
+                    len(dropped_smiles),
+                    preview,
+                )
+                return aligned_smiles
+
+            if missing_smiles:
+                missing_preview = ", ".join(missing_smiles[:3])
+            else:
+                missing_preview = "n/a"
+            raise ValueError(
+                "MotiL CSV smiles could not be aligned to OGB dataset order: "
+                f"csv={len(smiles_list)} dataset={len(dataset)} path={csv_path}. "
+                f"Dropped={len(dropped_smiles)}, missing={len(missing_smiles)}. "
+                f"Missing examples: {missing_preview}"
+            )
+
         raise ValueError(
             "MotiL CSV smiles count does not match dataset length: "
             f"{len(smiles_list)} vs {len(dataset)} for {csv_path}"
         )
 
     return smiles_list
+
+
+def _safe_scaffold_from_smiles(smiles, idx, chem_module, murcko_module):
+    mol = chem_module.MolFromSmiles(smiles)
+    if mol is None:
+        mol = chem_module.MolFromSmiles(smiles, sanitize=False)
+
+    if mol is None:
+        return f"__invalid_scaffold_{idx}", True
+
+    try:
+        scaffold = murcko_module.MurckoScaffoldSmiles(mol=mol, includeChirality=False)
+    except Exception:
+        return f"__invalid_scaffold_{idx}", True
+
+    return scaffold, False
 
 
 def setup_scaffold_balanced_split(dataset):
@@ -180,22 +244,11 @@ def setup_scaffold_balanced_split(dataset):
     scaffold_to_indices = defaultdict(list)
     invalid_smiles = []
     for idx, smiles in enumerate(smiles_list):
-        mol = Chem.MolFromSmiles(smiles)
-
-        if mol is None:
-            mol = Chem.MolFromSmiles(smiles, sanitize=False)
-
-        if mol is None:
+        scaffold, is_invalid = _safe_scaffold_from_smiles(
+            smiles, idx, Chem, MurckoScaffold
+        )
+        if is_invalid:
             invalid_smiles.append((idx, smiles))
-            scaffold = f"__invalid_scaffold_{idx}"
-        else:
-            try:
-                scaffold = MurckoScaffold.MurckoScaffoldSmiles(
-                    mol=mol, includeChirality=False
-                )
-            except Exception:
-                invalid_smiles.append((idx, smiles))
-                scaffold = f"__invalid_scaffold_{idx}"
 
         scaffold_to_indices[scaffold].append(idx)
 
@@ -275,21 +328,18 @@ def setup_motil_scafford_balance_split(dataset):
     scaffold_to_indices = defaultdict(list)
     invalid_smiles = []
     for idx, smiles in enumerate(smiles_list):
-        mol = Chem.MolFromSmiles(smiles)
-        if mol is None:
+        scaffold, is_invalid = _safe_scaffold_from_smiles(
+            smiles, idx, Chem, MurckoScaffold
+        )
+        if is_invalid:
             invalid_smiles.append((idx, smiles))
-            scaffold = f"__invalid_scaffold_{idx}"
-        else:
-            scaffold = MurckoScaffold.MurckoScaffoldSmiles(
-                mol=mol, includeChirality=False
-            )
         scaffold_to_indices[scaffold].append(idx)
 
     if invalid_smiles:
         preview = ", ".join([f"{i}:{s}" for i, s in invalid_smiles[:3]])
         logging.warning(
-            "motil_scafford_balance encountered %d invalid SMILES; assigning each "
-            "to its own scaffold bucket. Examples: %s",
+            "motil_scafford_balance encountered %d invalid/unscaffoldable SMILES; "
+            "assigning each to its own scaffold bucket. Examples: %s",
             len(invalid_smiles),
             preview,
         )

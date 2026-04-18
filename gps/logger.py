@@ -334,16 +334,33 @@ def create_logger():
 
 def eval_spearmanr(y_true, y_pred):
     """Compute Spearman Rho averaged across tasks."""
-    res_list = []
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
 
     if y_true.ndim == 1:
-        res_list.append(stats.spearmanr(y_true, y_pred)[0])
-    else:
-        for i in range(y_true.shape[1]):
-            # ignore nan values
-            is_labeled = ~np.isnan(y_true[:, i])
-            res_list.append(
-                stats.spearmanr(y_true[is_labeled, i], y_pred[is_labeled, i])[0]
-            )
+        y_true = y_true.reshape(-1, 1)
+    if y_pred.ndim == 1:
+        y_pred = y_pred.reshape(-1, 1)
+
+    if y_true.shape[0] != y_pred.shape[0]:
+        raise ValueError(
+            "Spearman inputs must share the same number of samples: "
+            f"{y_true.shape[0]} vs {y_pred.shape[0]}"
+        )
+    if y_true.shape[1] != y_pred.shape[1]:
+        raise ValueError(
+            "Spearman inputs must share the same number of tasks: "
+            f"{y_true.shape[1]} vs {y_pred.shape[1]}"
+        )
+
+    res_list = []
+
+    for i in range(y_true.shape[1]):
+        # ignore nan values
+        is_labeled = ~np.isnan(y_true[:, i])
+        score = stats.spearmanr(y_true[is_labeled, i], y_pred[is_labeled, i])[0]
+        if np.isnan(score):
+            score = 0.0
+        res_list.append(score)
 
     return {"spearmanr": sum(res_list) / len(res_list)}

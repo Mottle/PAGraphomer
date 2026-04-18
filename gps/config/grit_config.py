@@ -25,9 +25,11 @@ def grit_cfg(cfg):
     cfg.grit.motil_pretrain.dropout2 = 0.3
     cfg.grit.motil_pretrain.depth1 = -1
     cfg.grit.motil_pretrain.depth2 = -1
+    cfg.grit.motil_pretrain.fg_local_depth = 2
     cfg.grit.motil_pretrain.temperature = 0.1
     cfg.grit.motil_pretrain.diffusion_steps = 1000
     cfg.grit.motil_pretrain.diffusion_hidden = 64
+    cfg.grit.motil_pretrain.atom_attr_dims = [119, 5, 12, 12, 10, 6, 6, 2, 2]
     cfg.grit.motil_pretrain.diffusion_lr = 3e-5
     cfg.grit.motil_pretrain.contrast_lr = 3e-5
     cfg.grit.motil_pretrain.scheduler_gamma = 0.99

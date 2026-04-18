@@ -1,6 +1,6 @@
 # GRIT finetuning on ogbg-molesol using the ZINC MotiL-style pretrained backbone.
 out_dir: results
-metric_best: mae
+metric_best: rmse
 metric_agg: argmin
 wandb:
   use: False
@@ -10,7 +10,7 @@ dataset:
   task: graph
   task_type: regression
   transductive: False
-  molecule_loader: ogb
+  molecule_loader: motil_csv
   external_smiles_csv: datasets/motil_micromolecule/esol.csv
   split_mode: motil_scafford_balance
   split: [0.8, 0.1, 0.1]
@@ -34,7 +34,7 @@ posenc_RRWP:
   attr_name_rel: rrwp
 train:
   mode: grit_finetune
-  batch_size: 32
+  batch_size: 64
   eval_period: 1
   ckpt_period: 10
   enable_ckpt: True
@@ -61,7 +61,7 @@ gt:
   layer_type: GritTransformer
   layers: 8
   n_heads: 4
-  dim_hidden: 32
+  dim_hidden: 64
   dropout: 0.0
   layer_norm: False
   batch_norm: True
@@ -78,7 +78,7 @@ gnn:
   head: san_graph
   layers_pre_mp: 0
   layers_post_mp: 3
-  dim_inner: 32
+  dim_inner: 64
   batchnorm: True
   act: gelu
   dropout: 0.0

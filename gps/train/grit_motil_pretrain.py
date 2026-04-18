@@ -224,18 +224,20 @@ def _train_epoch_pretrain(
 ):
     model.train()
     optimizer.zero_grad()
+    accum_steps = max(1, int(getattr(cfg.optim, "batch_accumulation", 1)))
     time_start = time.time()
     cycle_mode = str(
         getattr(cfg.grit.motil_pretrain, "task_cycle", "alternate")
     ).lower()
     contrast_task = "contrast_mol"
     store_epoch_predictions = _should_store_epoch_predictions()
+    diffusion_optimizer.zero_grad(set_to_none=True)
+    contrast_optimizer.zero_grad(set_to_none=True)
 
-    for batch in loader:
+    for step, batch in enumerate(loader):
         batch.split = "train"
         batch.to(torch.device(cfg.accelerator))
 
-        diffusion_optimizer.zero_grad()
         batch.grit_pretrain_phase = "diffusion"
         pred, true = model(batch)
         if not hasattr(batch, "grit_aux") or "loss" not in batch.grit_aux:
@@ -249,18 +251,11 @@ def _train_epoch_pretrain(
         weighted_diffusion_loss = (
             float(getattr(cfg.grit.motil_pretrain, "w_diffusion", 1.0)) * diffusion_loss
         )
-        weighted_diffusion_loss.backward()
-        if cfg.optim.clip_grad_norm:
-            torch.nn.utils.clip_grad_norm_(
-                _optimizer_parameters(diffusion_optimizer),
-                cfg.optim.clip_grad_norm_value,
-            )
-        diffusion_optimizer.step()
+        (weighted_diffusion_loss / accum_steps).backward()
 
         if hasattr(batch, "grit_aux"):
             batch.grit_aux.clear()
 
-        contrast_optimizer.zero_grad()
         batch.grit_pretrain_phase = "contrast"
         batch.grit_pretrain_task = contrast_task
         pred, true = model(batch)
@@ -293,17 +288,27 @@ def _train_epoch_pretrain(
                 * contrast_fgs_loss
             )
 
-        loss.backward()
-        if cfg.optim.clip_grad_norm:
-            torch.nn.utils.clip_grad_norm_(
-                [
-                    p
-                    for group in contrast_optimizer.param_groups
-                    for p in group["params"]
-                ],
-                cfg.optim.clip_grad_norm_value,
-            )
-        contrast_optimizer.step()
+        (loss / accum_steps).backward()
+
+        should_step = ((step + 1) % accum_steps == 0) or (step + 1 == len(loader))
+        if should_step:
+            if cfg.optim.clip_grad_norm:
+                torch.nn.utils.clip_grad_norm_(
+                    _optimizer_parameters(diffusion_optimizer),
+                    cfg.optim.clip_grad_norm_value,
+                )
+                torch.nn.utils.clip_grad_norm_(
+                    [
+                        p
+                        for group in contrast_optimizer.param_groups
+                        for p in group["params"]
+                    ],
+                    cfg.optim.clip_grad_norm_value,
+                )
+            diffusion_optimizer.step()
+            contrast_optimizer.step()
+            diffusion_optimizer.zero_grad(set_to_none=True)
+            contrast_optimizer.zero_grad(set_to_none=True)
 
         time_used = time.time() - time_start
         if store_epoch_predictions:

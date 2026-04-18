@@ -278,7 +278,20 @@ def load_dataset_master(format, name, dataset_dir):
         logging.info(
             "Precomputing MotiL functional-group annotations for all graphs..."
         )
-        for attr in ["fg_atom_index", "fg_type_index", "fg_ptr", "fg_count"]:
+        for attr in [
+            "fg_atom_index",
+            "fg_type_index",
+            "fg_type",
+            "fg_atom_fg_id",
+            "fg_ptr",
+            "fg_count",
+            "fg_edge_index",
+            "fg_edge_attr",
+            "fg_edge_ptr",
+            "fg_edge_fg_id",
+            "fg_edge_src_pos",
+            "fg_edge_dst_pos",
+        ]:
             if hasattr(dataset.data, attr):
                 delattr(dataset.data, attr)
             if attr in dataset.slices:

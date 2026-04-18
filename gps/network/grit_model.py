@@ -96,6 +96,13 @@ class GritTransformer(torch.nn.Module):
         self.edge_decoder = None
         self.edge_loss = None
         self.motil_diffusion_head = None
+        self.motil_diffusion_attr_decoders = None
+        self.motil_atom_attr_dims = ()
+        self.motil_fg_node_proj = None
+        self.motil_fg_msg_mlp = None
+        self.motil_fg_update_norm = None
+        self.motil_fg_readout = None
+        self.motil_fg_local_depth = 0
 
         if cfg.gnn.layers_pre_mp > 0:
             self.pre_mp = GNNPreMP(dim_in, cfg.gnn.dim_inner, cfg.gnn.layers_pre_mp)
@@ -173,6 +180,45 @@ class GritTransformer(torch.nn.Module):
                 torch.nn.Linear(cfg.gnn.dim_inner, diffusion_hidden),
                 diffusion_act(),
                 torch.nn.Linear(diffusion_hidden, cfg.gnn.dim_inner),
+            )
+            attr_dims = list(
+                getattr(
+                    cfg.grit.motil_pretrain,
+                    "atom_attr_dims",
+                    [119, 5, 12, 12, 10, 6, 6, 2, 2],
+                )
+            )
+            if not attr_dims or any(int(dim) <= 1 for dim in attr_dims):
+                raise ValueError(
+                    "GRIT MotiL-style pretraining requires valid atom_attr_dims."
+                )
+            self.motil_atom_attr_dims = tuple(int(dim) for dim in attr_dims)
+            self.motil_diffusion_attr_decoders = torch.nn.ModuleList(
+                [
+                    torch.nn.Linear(cfg.gnn.dim_inner, dim)
+                    for dim in self.motil_atom_attr_dims
+                ]
+            )
+            self.motil_fg_local_depth = int(
+                getattr(cfg.grit.motil_pretrain, "fg_local_depth", 2)
+            )
+            if self.motil_fg_local_depth < 1:
+                raise ValueError(
+                    "GRIT MotiL-style pretraining requires fg_local_depth >= 1"
+                )
+            self.motil_fg_node_proj = torch.nn.Linear(
+                cfg.gnn.dim_inner, cfg.gnn.dim_inner
+            )
+            self.motil_fg_msg_mlp = torch.nn.Sequential(
+                torch.nn.Linear(2 * cfg.gnn.dim_inner, cfg.gnn.dim_inner),
+                diffusion_act(),
+                torch.nn.Linear(cfg.gnn.dim_inner, cfg.gnn.dim_inner),
+            )
+            self.motil_fg_update_norm = torch.nn.LayerNorm(cfg.gnn.dim_inner)
+            self.motil_fg_readout = torch.nn.Sequential(
+                torch.nn.Linear(cfg.gnn.dim_inner, cfg.gnn.dim_inner),
+                diffusion_act(),
+                torch.nn.Linear(cfg.gnn.dim_inner, cfg.gnn.dim_inner),
             )
             betas = torch.linspace(1e-4, 0.02, diffusion_steps, dtype=torch.float32)
             alphas = 1.0 - betas
@@ -350,27 +396,121 @@ class GritTransformer(torch.nn.Module):
         loss = loss + lambda_ * corr[off_diagonal_mask].pow(2).sum()
         return loss
 
-    def _compute_fg_embeddings(self, node_repr, batch):
-        fg_count = 0
-        if hasattr(batch, "fg_count"):
-            if torch.is_tensor(batch.fg_count):
-                fg_count = int(batch.fg_count.view(-1).sum().item())
-            else:
-                fg_count = int(batch.fg_count)
-        if fg_count == 0:
-            return node_repr.new_zeros((0, node_repr.size(-1)))
-        if batch.fg_atom_index.numel() == 0 or batch.fg_ptr.numel() < 2:
-            return node_repr.new_zeros((0, node_repr.size(-1)))
+    def _build_fg_motif_context(self, batch, node_repr):
+        required = ["fg_count", "fg_atom_index", "fg_atom_fg_id", "fg_type"]
+        if any(not hasattr(batch, attr) for attr in required):
+            return None
 
-        fg_ids = []
-        fg_ptr = batch.fg_ptr.tolist()
-        for fg_idx in range(len(fg_ptr) - 1):
-            length = fg_ptr[fg_idx + 1] - fg_ptr[fg_idx]
-            fg_ids.extend([fg_idx] * length)
-        fg_ids = torch.tensor(fg_ids, dtype=torch.long, device=node_repr.device)
-        fg_node_repr = node_repr[batch.fg_atom_index.to(node_repr.device)]
-        fg_emb = scatter_mean(fg_node_repr, fg_ids, dim=0)
-        return fg_emb
+        device = node_repr.device
+        fg_count = batch.fg_count.view(-1).to(device=device, dtype=torch.long)
+        if fg_count.numel() == 0:
+            return None
+
+        total_fg = int(fg_count.sum().item())
+        if total_fg == 0:
+            return None
+
+        fg_type = batch.fg_type.to(device=device, dtype=torch.long)
+        if fg_type.numel() != total_fg:
+            return None
+
+        atom_node_idx = batch.fg_atom_index.to(device=device, dtype=torch.long)
+        atom_fg_local = batch.fg_atom_fg_id.to(device=device, dtype=torch.long)
+        if atom_node_idx.numel() == 0 or atom_fg_local.numel() == 0:
+            return None
+
+        fg_offsets = torch.cumsum(
+            torch.cat([fg_count.new_zeros(1), fg_count[:-1]], dim=0), dim=0
+        )
+        atom_graph_id = batch.batch[atom_node_idx].to(device=device, dtype=torch.long)
+        atom_fg_global = atom_fg_local + fg_offsets[atom_graph_id]
+        if atom_fg_global.numel() == 0:
+            return None
+        if int(atom_fg_global.max().item()) >= total_fg:
+            return None
+
+        total_fg = int(total_fg)
+        fg_offsets = fg_offsets.to(device=device, dtype=torch.long)
+        fg_start_pos = torch.cumsum(
+            torch.bincount(atom_fg_global, minlength=total_fg), dim=0
+        )
+        fg_start_pos = fg_start_pos - torch.bincount(atom_fg_global, minlength=total_fg)
+
+        edge_src_local = atom_fg_global.new_empty((0,))
+        edge_dst_local = atom_fg_global.new_empty((0,))
+        if (
+            hasattr(batch, "fg_edge_index")
+            and hasattr(batch, "fg_edge_fg_id")
+            and hasattr(batch, "fg_edge_src_pos")
+            and hasattr(batch, "fg_edge_dst_pos")
+            and batch.fg_edge_index.numel() > 0
+            and batch.fg_edge_fg_id.numel() > 0
+        ):
+            fg_edge_index = batch.fg_edge_index.to(device=device, dtype=torch.long)
+            edge_src_node = fg_edge_index[0]
+            edge_dst_node = fg_edge_index[1]
+            edge_fg_local = batch.fg_edge_fg_id.to(device=device, dtype=torch.long)
+            edge_graph_id = batch.batch[edge_src_node].to(
+                device=device, dtype=torch.long
+            )
+            edge_fg_global = edge_fg_local + fg_offsets[edge_graph_id]
+            edge_src_pos = batch.fg_edge_src_pos.to(device=device, dtype=torch.long)
+            edge_dst_pos = batch.fg_edge_dst_pos.to(device=device, dtype=torch.long)
+            valid_edge = (edge_fg_global >= 0) & (edge_fg_global < total_fg)
+            if valid_edge.any():
+                edge_src_local = (
+                    fg_start_pos[edge_fg_global[valid_edge]] + edge_src_pos[valid_edge]
+                )
+                edge_dst_local = (
+                    fg_start_pos[edge_fg_global[valid_edge]] + edge_dst_pos[valid_edge]
+                )
+
+        return {
+            "total_fg": total_fg,
+            "fg_type": fg_type,
+            "atom_node_idx": atom_node_idx,
+            "atom_fg_global": atom_fg_global,
+            "edge_src_local": edge_src_local,
+            "edge_dst_local": edge_dst_local,
+        }
+
+    def _encode_fg_motif_instances(self, node_repr, batch, context=None):
+        if context is None:
+            context = self._build_fg_motif_context(batch, node_repr)
+        if context is None:
+            return node_repr.new_zeros((0, node_repr.size(-1))), node_repr.new_zeros(
+                (0,), dtype=torch.long
+            )
+
+        motif_node_repr = self.motil_fg_node_proj(node_repr[context["atom_node_idx"]])
+
+        edge_src_local = context["edge_src_local"]
+        edge_dst_local = context["edge_dst_local"]
+        if edge_src_local.numel() > 0 and edge_dst_local.numel() > 0:
+            for _ in range(self.motil_fg_local_depth):
+                msg_in = torch.cat(
+                    [motif_node_repr[edge_src_local], motif_node_repr[edge_dst_local]],
+                    dim=-1,
+                )
+                messages = self.motil_fg_msg_mlp(msg_in)
+                aggregated = scatter_mean(
+                    messages,
+                    edge_dst_local,
+                    dim=0,
+                    dim_size=motif_node_repr.size(0),
+                )
+                motif_node_repr = self.motil_fg_update_norm(
+                    motif_node_repr + aggregated
+                )
+
+        motif_embeddings = scatter_mean(
+            motif_node_repr,
+            context["atom_fg_global"],
+            dim=0,
+            dim_size=context["total_fg"],
+        )
+        motif_embeddings = self.motil_fg_readout(motif_embeddings)
+        return motif_embeddings, context["fg_type"]
 
     def _compute_motil_pretrain_loss(self, batch):
         if self.motil_diffusion_head is None:
@@ -381,16 +521,42 @@ class GritTransformer(torch.nn.Module):
         zero = torch.zeros((), device=x_raw.device, dtype=torch.float32)
         if phase in {"diffusion", "joint"}:
             encoded = self._encode_batch(batch.clone())
-            base_x = encoded.x
+            h0 = encoded.x
+            if x_raw.dim() < 2:
+                raise RuntimeError(
+                    "GRIT MotiL diffusion expects raw node attributes in batch.x."
+                )
+            num_attrs = len(self.motil_atom_attr_dims)
+            if x_raw.size(1) < num_attrs:
+                raise RuntimeError(
+                    "GRIT MotiL diffusion received fewer atom attributes than expected: "
+                    f"got={x_raw.size(1)}, expected_at_least={num_attrs}."
+                )
+            atom_targets = x_raw[:, :num_attrs].long()
             diffusion_steps = int(self.motil_alpha_bars.numel())
-            t = torch.randint(
-                0, diffusion_steps, (base_x.size(0),), device=base_x.device
-            )
+            t = torch.randint(0, diffusion_steps, (h0.size(0),), device=h0.device)
             alpha_bar_t = self.motil_alpha_bars[t].unsqueeze(-1)
-            noise = torch.randn_like(base_x)
-            x_t = torch.sqrt(alpha_bar_t) * base_x + torch.sqrt(1 - alpha_bar_t) * noise
-            pred_noise = self.motil_diffusion_head(x_t)
-            diffusion_loss = F.mse_loss(pred_noise, noise)
+            noise = torch.randn_like(h0)
+            h_t = torch.sqrt(alpha_bar_t) * h0 + torch.sqrt(1 - alpha_bar_t) * noise
+            pred_noise = self.motil_diffusion_head(h_t)
+            h0_pred = (h_t - torch.sqrt(1 - alpha_bar_t) * pred_noise) / torch.sqrt(
+                alpha_bar_t
+            )
+            attr_losses = []
+            for idx, decoder in enumerate(self.motil_diffusion_attr_decoders):
+                target = atom_targets[:, idx]
+                logits = decoder(h0_pred)
+                if target.numel() > 0:
+                    min_target = int(target.min().item())
+                    max_target = int(target.max().item())
+                    if min_target < 0 or max_target >= logits.size(-1):
+                        raise RuntimeError(
+                            "GRIT MotiL diffusion atom attribute targets are out of "
+                            f"range at attr_idx={idx}: min={min_target}, "
+                            f"max={max_target}, num_classes={logits.size(-1)}."
+                        )
+                attr_losses.append(F.cross_entropy(logits, target))
+            diffusion_loss = torch.stack(attr_losses).mean()
         else:
             diffusion_loss = zero
 
@@ -436,8 +602,39 @@ class GritTransformer(torch.nn.Module):
                 contrast_loss = self._pointwise_contrastive_loss(graph_emb1, graph_emb2)
 
             if phase == "joint" or active_task == "contrast_fgs":
-                fg_emb1 = self._compute_fg_embeddings(out1.x, out1)
-                fg_emb2 = self._compute_fg_embeddings(out2.x, out2)
+                shared_fg_context = self._build_fg_motif_context(out1, out1.x)
+                fg_instances1, fg_type1 = self._encode_fg_motif_instances(
+                    out1.x, out1, context=shared_fg_context
+                )
+                fg_instances2, fg_type2 = self._encode_fg_motif_instances(
+                    out2.x, out2, context=shared_fg_context
+                )
+
+                if fg_instances1.size(0) > 0 and fg_instances2.size(0) > 0:
+                    num_fg_types = int(
+                        max(fg_type1.max().item(), fg_type2.max().item()) + 1
+                    )
+                    fg_prototypes1 = scatter_mean(
+                        fg_instances1,
+                        fg_type1,
+                        dim=0,
+                        dim_size=num_fg_types,
+                    )
+                    fg_prototypes2 = scatter_mean(
+                        fg_instances2,
+                        fg_type2,
+                        dim=0,
+                        dim_size=num_fg_types,
+                    )
+                    fg_counts1 = torch.bincount(fg_type1, minlength=num_fg_types)
+                    fg_counts2 = torch.bincount(fg_type2, minlength=num_fg_types)
+                    common_type_mask = (fg_counts1 > 0) & (fg_counts2 > 0)
+                    fg_emb1 = fg_prototypes1[common_type_mask]
+                    fg_emb2 = fg_prototypes2[common_type_mask]
+                else:
+                    fg_emb1 = diffusion_loss.new_zeros((0, out1.x.size(-1)))
+                    fg_emb2 = diffusion_loss.new_zeros((0, out2.x.size(-1)))
+
                 fg_contrast_loss = self._pointwise_contrastive_loss(fg_emb1, fg_emb2)
 
         total_loss = zero

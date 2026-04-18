@@ -6,6 +6,7 @@ import os.path as osp
 
 import torch
 from ogb.utils import smiles2graph
+from rdkit import Chem
 from torch_geometric.graphgym.config import cfg
 from torch_geometric.data import Data, InMemoryDataset
 
@@ -17,6 +18,8 @@ class MotiLMoleculeCSVDataset(InMemoryDataset):
     task targets. Empty target strings are converted to NaN, matching Chemprop's
     missing-label handling for multilabel datasets like Tox21.
     """
+
+    CACHE_VERSION = 4
 
     def __init__(
         self,
@@ -31,7 +34,7 @@ class MotiLMoleculeCSVDataset(InMemoryDataset):
         self.dataset_name = dataset_name
         self.name = dataset_name
         super().__init__(root, transform, pre_transform, pre_filter)
-        self.data, self.slices = torch.load(self.processed_paths[0])
+        self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
 
     def get_feature_cache_path(self, cache_key):
         digest = hashlib.md5(cache_key.encode("utf-8")).hexdigest()[:12]
@@ -52,6 +55,7 @@ class MotiLMoleculeCSVDataset(InMemoryDataset):
 
     def build_feature_cache_key(self, pe_enabled_list, motil_fg_enabled):
         payload = {
+            "cache_version": self.CACHE_VERSION,
             "dataset_name": self.dataset_name,
             "csv_path": osp.abspath(self.csv_path),
             "pe_enabled_list": list(pe_enabled_list),
@@ -74,7 +78,7 @@ class MotiLMoleculeCSVDataset(InMemoryDataset):
 
     @property
     def processed_file_names(self):
-        return ["data.pt"]
+        return [f"data_v{self.CACHE_VERSION}.pt"]
 
     def download(self):
         if not osp.exists(self.csv_path):
@@ -82,6 +86,7 @@ class MotiLMoleculeCSVDataset(InMemoryDataset):
 
     def process(self):
         data_list = []
+        skipped_invalid = 0
         with open(self.csv_path, newline="", encoding="utf-8") as f:
             reader = csv.reader(f)
             header = next(reader)
@@ -92,7 +97,16 @@ class MotiLMoleculeCSVDataset(InMemoryDataset):
                 if not row:
                     continue
                 smiles = row[0]
-                graph = smiles2graph(smiles)
+                mol = Chem.MolFromSmiles(smiles)
+                if mol is None or mol.GetNumHeavyAtoms() == 0:
+                    skipped_invalid += 1
+                    continue
+
+                try:
+                    graph = smiles2graph(smiles)
+                except Exception:
+                    skipped_invalid += 1
+                    continue
 
                 data = Data()
                 data.__num_nodes__ = int(graph["num_nodes"])
@@ -105,14 +119,14 @@ class MotiLMoleculeCSVDataset(InMemoryDataset):
                 if is_binary_single_task:
                     value = targets[0] if targets else ""
                     target = -1 if value == "" else int(float(value))
-                    data.y = torch.tensor([target], dtype=torch.long)
+                    data.y = torch.tensor([[target]], dtype=torch.long)
                 elif num_tasks == 1:
                     value = targets[0] if targets else ""
                     target = float("nan") if value == "" else float(value)
-                    data.y = torch.tensor([target], dtype=torch.float)
+                    data.y = torch.tensor([[target]], dtype=torch.float)
                 else:
                     parsed = [float("nan") if v == "" else float(v) for v in targets]
-                    data.y = torch.tensor(parsed, dtype=torch.float)
+                    data.y = torch.tensor([parsed], dtype=torch.float)
 
                 if self.pre_filter is not None and not self.pre_filter(data):
                     continue
@@ -122,5 +136,10 @@ class MotiLMoleculeCSVDataset(InMemoryDataset):
 
         if not data_list:
             raise ValueError(f"No graphs were constructed from CSV: {self.csv_path}")
+
+        if skipped_invalid > 0:
+            print(
+                f"Skipped {skipped_invalid} invalid SMILES while processing {self.csv_path}"
+            )
 
         torch.save(self.collate(data_list), self.processed_paths[0])

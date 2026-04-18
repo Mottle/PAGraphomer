@@ -33,12 +33,12 @@ posenc_RRWP:
   attr_name_rel: rrwp
 train:
   mode: grit_motil_pretrain
-  batch_size: 256
+  batch_size: 128
   eval_period: 1
   enable_ckpt: True
   ckpt_best: True
   ckpt_clean: True
-  auto_resume: True
+  auto_resume: False
 model:
   type: GritTransformer
   loss_fun: l1
@@ -55,12 +55,14 @@ grit:
     dropout1: 0.3
     dropout2: 0.3
     depth1: 8
-    depth2: 4
+    depth2: 6
+    fg_local_depth: 2
     temperature: 0.1
     diffusion_steps: 1000
     diffusion_hidden: 32
-    diffusion_lr: 3e-5
-    contrast_lr: 3e-5
+    atom_attr_dims: [53, 3, 5, 7, 4, 2, 3, 2, 2]
+    diffusion_lr: 1e-4
+    contrast_lr: 1e-4
     scheduler_gamma: 0.99
     scheduler_step: 500
     w_diffusion: 1.0
@@ -71,7 +73,7 @@ gt:
   layer_type: GritTransformer
   layers: 8
   n_heads: 4
-  dim_hidden: 32
+  dim_hidden: 128
   dropout: 0.0
   layer_norm: False
   batch_norm: True
@@ -88,19 +90,19 @@ gnn:
   head: san_graph
   layers_pre_mp: 0
   layers_post_mp: 3
-  dim_inner: 32
+  dim_inner: 128
   batchnorm: True
   act: gelu
   dropout: 0.0
   agg: mean
   normalize_adj: False
 optim:
-  batch_accumulation: 1
+  batch_accumulation: 2
   clip_grad_norm: True
   optimizer: muon_adamw
   weight_decay: 1e-5
-  base_lr: 3e-5
-  max_epoch: 100
-  num_warmup_epochs: 1
+  base_lr: 1e-4
+  max_epoch: 500
+  num_warmup_epochs: 10
   scheduler: cosine_with_warmup
-  min_lr: 1e-6
+  min_lr: 1e-5
