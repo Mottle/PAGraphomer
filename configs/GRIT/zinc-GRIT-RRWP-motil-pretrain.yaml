@@ -38,7 +38,7 @@ train:
   enable_ckpt: True
   ckpt_best: True
   ckpt_clean: True
-  auto_resume: False
+  auto_resume: True
 model:
   type: GritTransformer
   loss_fun: l1
