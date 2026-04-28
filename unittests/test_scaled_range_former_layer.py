@@ -55,7 +55,9 @@ class TestScaledRangeFormerLayer(ut.TestCase):
         load_cfg(cfg, _Args)
 
     def _assert_layer_forward(self, layer_cls):
-        batch = _toy_batch(dim_h=cfg.gt.dim_hidden, rrwp_dim=cfg.posenc_RRWP.walk_length)
+        batch = _toy_batch(
+            dim_h=cfg.gt.dim_hidden, rrwp_dim=cfg.posenc_RRWP.walk_length
+        )
         layer = layer_cls(
             in_dim=cfg.gt.dim_hidden,
             out_dim=cfg.gt.dim_hidden,
@@ -77,7 +79,9 @@ class TestScaledRangeFormerLayer(ut.TestCase):
         self.assertEqual(out.pair_attr.shape[0], out.pair_index.shape[1])
 
     def test_rrwp_pair_encoder_injects_edge_and_flag(self):
-        batch = _toy_batch(dim_h=cfg.gt.dim_hidden, rrwp_dim=cfg.posenc_RRWP.walk_length)
+        batch = _toy_batch(
+            dim_h=cfg.gt.dim_hidden, rrwp_dim=cfg.posenc_RRWP.walk_length
+        )
         encoder = RRWPPairEncoder(
             emb_dim=cfg.posenc_RRWP.walk_length,
             out_dim=cfg.gt.dim_hidden,
@@ -95,7 +99,9 @@ class TestScaledRangeFormerLayer(ut.TestCase):
         self.assertGreaterEqual(out.pair_index.shape[1], out.edge_index.shape[1])
 
     def test_distance_masks_are_built_from_spd_thresholds(self):
-        batch = _toy_batch(dim_h=cfg.gt.dim_hidden, rrwp_dim=cfg.posenc_RRWP.walk_length)
+        batch = _toy_batch(
+            dim_h=cfg.gt.dim_hidden, rrwp_dim=cfg.posenc_RRWP.walk_length
+        )
         attn = ScaledRangeFormerAttention(
             dim_h=cfg.gt.dim_hidden,
             num_heads=cfg.gt.n_heads,
@@ -110,7 +116,9 @@ class TestScaledRangeFormerLayer(ut.TestCase):
         self.assertTrue(scale_values[-1].all())
 
     def test_soft_mask_uses_score_times_binary_mask(self):
-        batch = _toy_batch(dim_h=cfg.gt.dim_hidden, rrwp_dim=cfg.posenc_RRWP.walk_length)
+        batch = _toy_batch(
+            dim_h=cfg.gt.dim_hidden, rrwp_dim=cfg.posenc_RRWP.walk_length
+        )
         cfg.gt.msrrwp.mask_mode = "soft"
         attn = ScaledRangeFormerAttention(
             dim_h=cfg.gt.dim_hidden,
@@ -127,10 +135,16 @@ class TestScaledRangeFormerLayer(ut.TestCase):
         self.assertTrue(torch.equal(edge_coeff, mask))
 
     def test_percentiles_are_computed_per_graph(self):
-        data1 = _toy_batch(dim_h=cfg.gt.dim_hidden, rrwp_dim=cfg.posenc_RRWP.walk_length)
-        data2 = _toy_batch(dim_h=cfg.gt.dim_hidden, rrwp_dim=cfg.posenc_RRWP.walk_length)
+        data1 = _toy_batch(
+            dim_h=cfg.gt.dim_hidden, rrwp_dim=cfg.posenc_RRWP.walk_length
+        )
+        data2 = _toy_batch(
+            dim_h=cfg.gt.dim_hidden, rrwp_dim=cfg.posenc_RRWP.walk_length
+        )
         data_list = Batch.to_data_list(data1) + Batch.to_data_list(data2)
-        data_list[1].srf_spd_val = torch.tensor([5, 5, 5, 5, 0, 7, 0, 7, 0], dtype=torch.long)
+        data_list[1].srf_spd_val = torch.tensor(
+            [5, 5, 5, 5, 0, 7, 0, 7, 0], dtype=torch.long
+        )
         batch = Batch.from_data_list(data_list)
         attn = ScaledRangeFormerAttention(
             dim_h=cfg.gt.dim_hidden,
@@ -144,7 +158,11 @@ class TestScaledRangeFormerLayer(ut.TestCase):
         scale_values = attn._compute_scale_values(batch, spd_full, pair_index)
         first_graph_pairs = batch.batch[pair_index[0]] == 0
         second_graph_pairs = batch.batch[pair_index[0]] == 1
-        self.assertFalse(torch.equal(scale_values[0][first_graph_pairs], scale_values[0][second_graph_pairs]))
+        self.assertFalse(
+            torch.equal(
+                scale_values[0][first_graph_pairs], scale_values[0][second_graph_pairs]
+            )
+        )
 
     def test_b_plus_uses_per_scale_alphas(self):
         self.assertEqual(list(cfg.gt.msrrwp.alphas), [1.0, 1.5, 2.0])

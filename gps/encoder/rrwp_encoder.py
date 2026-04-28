@@ -334,7 +334,9 @@ class RRWPPairEncoder(torch.nn.Module):
 
         if self.inject_edge_attr and getattr(batch, "edge_attr", None) is not None:
             edge_attr = batch.edge_attr
-            edge_feat = self.edge_proj(edge_attr) if self.edge_proj is not None else edge_attr
+            edge_feat = (
+                self.edge_proj(edge_attr) if self.edge_proj is not None else edge_attr
+            )
             pair_idx = torch.cat([pair_idx, batch.edge_index], dim=1)
             pair_val = torch.cat([pair_val, edge_feat], dim=0)
             pair_idx, pair_val = torch_sparse.coalesce(

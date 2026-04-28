@@ -29,7 +29,9 @@ def _groupwise_sparsemax(src, index, num_nodes=None):
         z = src[mask]
         z_sorted, _ = torch.sort(z, dim=0, descending=True)
         z_cumsum = z_sorted.cumsum(dim=0)
-        ks = torch.arange(1, z.size(0) + 1, device=src.device, dtype=src.dtype).view(-1, 1)
+        ks = torch.arange(1, z.size(0) + 1, device=src.device, dtype=src.dtype).view(
+            -1, 1
+        )
         support = 1 + ks * z_sorted > z_cumsum
         k_z = support.sum(dim=0).clamp(min=1)
         tau_sum = z_cumsum.gather(0, (k_z - 1).unsqueeze(0)).squeeze(0)
@@ -217,7 +219,9 @@ class ScaledRangeFormerAttention(nn.Module):
         self.learnable_weights = bool(_cfg_get(ms_cfg, "learnable_weights", True))
         self.inner_residual = bool(_cfg_get(ms_cfg, "inner_residual", True))
         self.inner_norm = bool(_cfg_get(ms_cfg, "inner_norm", True))
-        self.thresholds = [float(v) for v in list(_cfg_get(ms_cfg, "thresholds", [1.0]))]
+        self.thresholds = [
+            float(v) for v in list(_cfg_get(ms_cfg, "thresholds", [1.0]))
+        ]
         if not self.thresholds:
             self.thresholds = [1.0]
         self.num_scales = len(self.thresholds)
@@ -330,7 +334,9 @@ class ScaledRangeFormerAttention(nn.Module):
             op="add",
         )
         if aligned_index.size(1) != pair_index.size(1):
-            raise RuntimeError("SPD alignment changed pair graph cardinality unexpectedly.")
+            raise RuntimeError(
+                "SPD alignment changed pair graph cardinality unexpectedly."
+            )
         return aligned_spd
 
     def _compute_scale_values(self, batch, spd_full, pair_index):
@@ -341,7 +347,9 @@ class ScaledRangeFormerAttention(nn.Module):
                     f"Precomputed mask scale count ({pre_mask.size(1)}) does not match expected "
                     f"count ({self.num_scales})."
                 )
-            return [pre_mask[:, idx].to(spd_full.dtype) for idx in range(pre_mask.size(1))]
+            return [
+                pre_mask[:, idx].to(spd_full.dtype) for idx in range(pre_mask.size(1))
+            ]
 
         if len(self.thresholds) != self.num_scales:
             raise ValueError(
@@ -354,7 +362,9 @@ class ScaledRangeFormerAttention(nn.Module):
         pair_graph = self._build_pair_graph_ids(batch, pair_index)
         num_graphs = int(pair_graph.max().item()) + 1 if pair_graph.numel() > 0 else 0
 
-        scale_values = [torch.zeros_like(spd_full, dtype=spd_full.dtype) for _ in self.thresholds]
+        scale_values = [
+            torch.zeros_like(spd_full, dtype=spd_full.dtype) for _ in self.thresholds
+        ]
         for gid in range(num_graphs):
             graph_mask = pair_graph == gid
             graph_non_self = graph_mask & (~is_self)
@@ -385,7 +395,9 @@ class ScaledRangeFormerAttention(nn.Module):
             edge_coeff = coeff
         else:
             active = coeff > self.hard_eps
-            masked_score = score.masked_fill(~active.unsqueeze(-1).unsqueeze(-1), self.NEG_INF)
+            masked_score = score.masked_fill(
+                ~active.unsqueeze(-1).unsqueeze(-1), self.NEG_INF
+            )
             edge_coeff = active.to(score.dtype)
         return masked_score, edge_coeff
 
@@ -396,7 +408,9 @@ class ScaledRangeFormerAttention(nn.Module):
         attn = grouped_normalize(score, dst, kind="softmax", num_nodes=num_nodes)
         attn = self.dropout(attn)
         msg = value * attn
-        node_out = torch.zeros_like(value.new_zeros(num_nodes, value.size(1), value.size(2)))
+        node_out = torch.zeros_like(
+            value.new_zeros(num_nodes, value.size(1), value.size(2))
+        )
         scatter(msg, dst, dim=0, out=node_out, reduce="add")
         edge_out = relation * edge_coeff.unsqueeze(-1).unsqueeze(-1)
         return node_out.flatten(1), edge_out.flatten(1)
@@ -474,7 +488,9 @@ class ScaledRangeFormerAttention(nn.Module):
         alpha = grouped_normalize(attn_score, dst, kind="softmax", num_nodes=num_nodes)
         alpha = self.dropout(alpha)
         msg = value * alpha
-        node_out = torch.zeros(num_nodes, value.size(1), value.size(2), device=value.device)
+        node_out = torch.zeros(
+            num_nodes, value.size(1), value.size(2), device=value.device
+        )
         scatter(msg, dst, dim=0, out=node_out, reduce="add")
         edge_out = relation * edge_coeff.unsqueeze(-1).unsqueeze(-1)
         return node_out.flatten(1), edge_out.flatten(1)

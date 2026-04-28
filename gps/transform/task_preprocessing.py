@@ -74,7 +74,9 @@ def _add_scaled_range_former_distance_masks(data, thresholds):
         return data
 
     if not hasattr(data, "srf_spd_val"):
-        raise ValueError("ScaledRangeFormer distance mask preprocessing requires srf_spd_val")
+        raise ValueError(
+            "ScaledRangeFormer distance mask preprocessing requires srf_spd_val"
+        )
 
     pair_index = _resolve_srf_pair_index(data)
     spd = data.srf_spd_val.view(num_nodes, num_nodes)
@@ -89,7 +91,10 @@ def _add_scaled_range_former_distance_masks(data, thresholds):
         cutoffs = []
         for theta in thresholds:
             theta = min(max(float(theta), 0.0), 1.0)
-            idx = min(total - 1, max(0, int(torch.ceil(torch.tensor(theta * total)).item()) - 1))
+            idx = min(
+                total - 1,
+                max(0, int(torch.ceil(torch.tensor(theta * total)).item()) - 1),
+            )
             cutoffs.append(sorted_spd[idx])
 
     masks = []

@@ -29,7 +29,7 @@ posenc_RRWP:
   attr_name_rel: rrwp
 train:
   mode: custom
-  batch_size: 128
+  batch_size: 32
   eval_period: 1
   enable_ckpt: True
   ckpt_best: True
@@ -83,6 +83,7 @@ gnn:
 optim:
   clip_grad_norm: True
   clip_grad_norm_value: 5.0
+  batch_accumulation: 2
   optimizer: adamW
   weight_decay: 1e-5
   base_lr: 0.001

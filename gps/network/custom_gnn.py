@@ -7,6 +7,22 @@ from torch_geometric.graphgym.register import register_network
 
 from gps.layer.gatedgcn_layer import GatedGCNLayer
 from gps.layer.gine_conv_layer import GINEConvLayer
+from torch_geometric.nn import GCNConv
+
+
+class GCNConvWrapper(torch.nn.Module):
+    def __init__(self, dim_in, dim_out, dropout, residual):
+        super().__init__()
+        self.conv = GCNConv(dim_in, dim_out)
+        self.dropout = dropout
+        self.residual = residual
+
+    def forward(self, batch):
+        h = self.conv(batch.x, batch.edge_index)
+        if self.residual and h.size(-1) == batch.x.size(-1):
+            h = h + batch.x
+        batch.x = torch.nn.functional.dropout(h, p=self.dropout, training=self.training)
+        return batch
 
 
 @register_network("custom_gnn")
@@ -45,6 +61,8 @@ class CustomGNN(torch.nn.Module):
             return GatedGCNLayer
         elif model_type == "gineconv":
             return GINEConvLayer
+        elif model_type == "gcnconv":
+            return GCNConvWrapper
         else:
             raise ValueError("Model {} unavailable".format(model_type))
 

@@ -171,6 +171,8 @@ dmypy.json
 !.pixi/config.toml
 
 .codex
+.opencode/
+tmp/
 AGENTS.md
 
 idea/

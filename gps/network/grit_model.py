@@ -17,9 +17,7 @@ class FeatureEncoder(torch.nn.Module):
         self.dim_in = dim_in
         self.use_scaled_range_former = str(getattr(cfg.model, "type", "")).startswith(
             "ScaledRangeFormer"
-        ) or str(getattr(cfg.gt, "layer_type", "")).startswith(
-            "ScaledRangeFormer"
-        )
+        ) or str(getattr(cfg.gt, "layer_type", "")).startswith("ScaledRangeFormer")
         if cfg.dataset.node_encoder:
             NodeEncoder = register.node_encoder_dict[cfg.dataset.node_encoder_name]
             self.node_encoder = NodeEncoder(cfg.gnn.dim_inner)

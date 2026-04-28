@@ -17,6 +17,7 @@ dataset:
   node_encoder_bn: False
   edge_encoder: False
   edge_encoder_bn: False
+run_multiple_splits: [0,1,2,3,4]
 posenc_RRWP:
   enable: True
   ksteps: 8
@@ -41,10 +42,10 @@ model:
   graph_pooling: add
 gt:
   layer_type: ScaledRangeFormerSequential
-  layers: 5
+  layers: 6
   n_heads: 4
-  dim_hidden: 48
-  dropout: 0.0
+  dim_hidden: 32
+  dropout: 0.1
   layer_norm: False
   batch_norm: True
   update_e: True
@@ -74,7 +75,7 @@ gnn:
   head: san_graph
   layers_pre_mp: 0
   layers_post_mp: 2
-  dim_inner: 48
+  dim_inner: 32
   batchnorm: True
   act: relu
   dropout: 0.0
