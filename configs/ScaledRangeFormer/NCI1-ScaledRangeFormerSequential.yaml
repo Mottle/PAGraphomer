@@ -1,0 +1,91 @@
+out_dir: results
+metric_best: accuracy-SBM
+metric_agg: argmax
+wandb:
+  use: False
+dataset:
+  format: PyG-TUDataset
+  name: NCI1
+  task: graph
+  task_type: classification
+  transductive: False
+  split_mode: cv-stratifiedkfold-10
+  split_dir: splits
+  split: [0.8, 0.1, 0.1]
+  node_encoder: True
+  node_encoder_name: LinearNode
+  node_encoder_bn: False
+  edge_encoder: False
+  edge_encoder_bn: False
+posenc_RRWP:
+  enable: True
+  ksteps: 8
+  walk_length: 8
+  add_identity: True
+  add_node_attr: False
+  add_inverse: False
+  spd: False
+  attr_name_abs: rrwp
+  attr_name_rel: rrwp
+train:
+  mode: custom
+  batch_size: 128
+  eval_period: 1
+  enable_ckpt: True
+  ckpt_best: True
+  ckpt_clean: True
+model:
+  type: ScaledRangeFormerModel
+  loss_fun: cross_entropy
+  edge_decoding: dot
+  graph_pooling: add
+gt:
+  layer_type: ScaledRangeFormerSequential
+  layers: 5
+  n_heads: 4
+  dim_hidden: 48
+  dropout: 0.0
+  layer_norm: False
+  batch_norm: True
+  update_e: True
+  attn_dropout: 0.1
+  attn:
+    clamp: 5.0
+    act: relu
+    full_attn: True
+    O_e: True
+    norm_e: True
+  msrrwp:
+    rrwp_name: rrwp
+    use_spd: True
+    spd_name: srf_spd
+    spd_max_dist: 16
+    thresholds: [0.3, 0.6, 1.0]
+    alphas: [1.0, 1.0, 1.0]
+    scale_mode: percentile
+    mask_mode: hard
+    weight_in_softmax: False
+    learnable_weights: True
+    inner_residual: True
+    inner_norm: True
+    inject_edge_attr: False
+    add_adj_indicator: True
+gnn:
+  head: san_graph
+  layers_pre_mp: 0
+  layers_post_mp: 2
+  dim_inner: 48
+  batchnorm: True
+  act: relu
+  dropout: 0.0
+  agg: mean
+  normalize_adj: False
+optim:
+  clip_grad_norm: True
+  clip_grad_norm_value: 5.0
+  optimizer: adamW
+  weight_decay: 1e-5
+  base_lr: 0.001
+  max_epoch: 150
+  scheduler: cosine_with_warmup
+  num_warmup_epochs: 10

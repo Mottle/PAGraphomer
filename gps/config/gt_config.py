@@ -68,6 +68,26 @@ def set_cfg_gt(cfg):
     cfg.gt.attn.O_e = True
     cfg.gt.attn.edge_enhance = True
 
+    # RRWP multi-scale pair transformer configuration.
+    cfg.gt.msrrwp = CN()
+    cfg.gt.msrrwp.rrwp_name = "rrwp"
+    cfg.gt.msrrwp.use_spd = True
+    cfg.gt.msrrwp.spd_name = "srf_spd"
+    cfg.gt.msrrwp.spd_max_dist = 16
+    cfg.gt.msrrwp.thresholds = [0.3, 0.6, 1.0]
+    cfg.gt.msrrwp.alphas = [1.0, 1.0, 1.0]
+    cfg.gt.msrrwp.scale_mode = "percentile"
+    cfg.gt.msrrwp.mask_mode = "hard"
+    cfg.gt.msrrwp.steps = [1, 3, 8]
+    cfg.gt.msrrwp.soft_eps = 1e-6
+    cfg.gt.msrrwp.hard_eps = 1e-9
+    cfg.gt.msrrwp.weight_in_softmax = False
+    cfg.gt.msrrwp.learnable_weights = True
+    cfg.gt.msrrwp.inner_residual = True
+    cfg.gt.msrrwp.inner_norm = True
+    cfg.gt.msrrwp.inject_edge_attr = True
+    cfg.gt.msrrwp.add_adj_indicator = True
+
     # BigBird model/GPS-BigBird layer.
     cfg.gt.bigbird = CN()
 

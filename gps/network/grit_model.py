@@ -8,11 +8,18 @@ from torch_geometric.graphgym.register import register_network
 from torch_geometric.nn import global_mean_pool
 from torch_scatter import scatter_mean
 
+from gps.encoder.rrwp_encoder import RRWPPairEncoder
+
 
 class FeatureEncoder(torch.nn.Module):
     def __init__(self, dim_in):
         super().__init__()
         self.dim_in = dim_in
+        self.use_scaled_range_former = str(getattr(cfg.model, "type", "")).startswith(
+            "ScaledRangeFormer"
+        ) or str(getattr(cfg.gt, "layer_type", "")).startswith(
+            "ScaledRangeFormer"
+        )
         if cfg.dataset.node_encoder:
             NodeEncoder = register.node_encoder_dict[cfg.dataset.node_encoder_name]
             self.node_encoder = NodeEncoder(cfg.gnn.dim_inner)
@@ -66,12 +73,27 @@ class FeatureEncoder(torch.nn.Module):
                     getattr(cfg.posenc_RRWP, "walk_length", 8),
                 )
             )
-            self.rrwp_rel_encoder = register.edge_encoder_dict["rrwp_linear"](
+            if not self.use_scaled_range_former:
+                if not hasattr(cfg.gnn, "dim_edge"):
+                    cfg.gnn.dim_edge = cfg.gnn.dim_inner
+                self.rrwp_rel_encoder = register.edge_encoder_dict["rrwp_linear"](
+                    rel_pe_dim,
+                    cfg.gnn.dim_edge,
+                    pad_to_full_graph=cfg.gt.attn.full_attn,
+                    add_node_attr_as_self_loop=False,
+                    fill_value=0.0,
+                )
+            self.rrwp_pair_encoder = RRWPPairEncoder(
                 rel_pe_dim,
-                cfg.gnn.dim_edge,
+                cfg.gnn.dim_inner,
+                edge_dim=cfg.gnn.dim_edge if cfg.dataset.edge_encoder else None,
+                rrwp_name=getattr(cfg.posenc_RRWP, "attr_name_rel", "rrwp"),
                 pad_to_full_graph=cfg.gt.attn.full_attn,
-                add_node_attr_as_self_loop=False,
                 fill_value=0.0,
+                inject_edge_attr=bool(getattr(cfg.gt.msrrwp, "inject_edge_attr", True)),
+                add_adj_indicator=bool(
+                    getattr(cfg.gt.msrrwp, "add_adj_indicator", True)
+                ),
             )
 
     def forward(self, batch):

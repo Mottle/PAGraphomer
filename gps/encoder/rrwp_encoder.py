@@ -268,3 +268,87 @@ class PadToFullGraphEdgeEncoder(torch.nn.Module):
         batch.edge_index = out_idx
         batch.edge_attr = out_val
         return batch
+
+
+class RRWPPairEncoder(torch.nn.Module):
+    def __init__(
+        self,
+        emb_dim,
+        out_dim,
+        use_bias=False,
+        edge_dim=None,
+        rrwp_name="rrwp",
+        pad_to_full_graph=True,
+        fill_value=0.0,
+        inject_edge_attr=True,
+        add_adj_indicator=True,
+    ):
+        super().__init__()
+        self.rrwp_name = rrwp_name
+        self.pad_to_full_graph = pad_to_full_graph
+        self.inject_edge_attr = inject_edge_attr
+        self.add_adj_indicator = add_adj_indicator
+        self.register_buffer(
+            "padding", torch.ones(1, out_dim, dtype=torch.float) * fill_value
+        )
+
+        self.fc = nn.Linear(emb_dim, out_dim, bias=use_bias)
+        torch.nn.init.xavier_uniform_(self.fc.weight)
+        if self.fc.bias is not None:
+            torch.nn.init.zeros_(self.fc.bias)
+
+        if edge_dim is None or not inject_edge_attr:
+            self.edge_proj = None
+        elif edge_dim == out_dim:
+            self.edge_proj = nn.Identity()
+        else:
+            self.edge_proj = nn.Linear(edge_dim, out_dim, bias=use_bias)
+            torch.nn.init.xavier_uniform_(self.edge_proj.weight)
+            if self.edge_proj.bias is not None:
+                torch.nn.init.zeros_(self.edge_proj.bias)
+
+        if self.add_adj_indicator:
+            self.edge_flag = nn.Parameter(torch.zeros(1, out_dim))
+            nn.init.xavier_uniform_(self.edge_flag)
+        else:
+            self.edge_flag = None
+
+    def forward(self, batch):
+        rrwp_idx = getattr(batch, f"{self.rrwp_name}_index")
+        rrwp_val = getattr(batch, f"{self.rrwp_name}_val")
+        rrwp_val = self.fc(rrwp_val)
+
+        pair_idx = rrwp_idx
+        pair_val = rrwp_val
+
+        if self.pad_to_full_graph:
+            pair_full = getattr(batch, "srf_pair_index", None)
+            if pair_full is None:
+                pair_full = full_edge_index(pair_idx, batch=batch.batch)
+            pair_pad = self.padding.repeat(pair_full.size(1), 1)
+            pair_idx = torch.cat([pair_idx, pair_full], dim=1)
+            pair_val = torch.cat([pair_val, pair_pad], dim=0)
+            pair_idx, pair_val = torch_sparse.coalesce(
+                pair_idx, pair_val, batch.num_nodes, batch.num_nodes, op="add"
+            )
+
+        if self.inject_edge_attr and getattr(batch, "edge_attr", None) is not None:
+            edge_attr = batch.edge_attr
+            edge_feat = self.edge_proj(edge_attr) if self.edge_proj is not None else edge_attr
+            pair_idx = torch.cat([pair_idx, batch.edge_index], dim=1)
+            pair_val = torch.cat([pair_val, edge_feat], dim=0)
+            pair_idx, pair_val = torch_sparse.coalesce(
+                pair_idx, pair_val, batch.num_nodes, batch.num_nodes, op="add"
+            )
+
+        if self.add_adj_indicator and self.edge_flag is not None:
+            edge_flag = self.edge_flag.expand(batch.edge_index.size(1), -1)
+            pair_idx = torch.cat([pair_idx, batch.edge_index], dim=1)
+            pair_val = torch.cat([pair_val, edge_flag], dim=0)
+            pair_idx, pair_val = torch_sparse.coalesce(
+                pair_idx, pair_val, batch.num_nodes, batch.num_nodes, op="add"
+            )
+
+        batch.pair_index = pair_idx
+        batch.pair_attr = pair_val
+        return batch
