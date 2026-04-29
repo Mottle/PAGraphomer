@@ -637,6 +637,9 @@ class ScaledRangeFormerLayer(nn.Module):
         self.bn_no_runner = bool(_cfg_get(cfg, "bn_no_runner", False))
         self.rezero = bool(_cfg_get(cfg, "rezero", False))
         self.act = act_dict[act]() if act is not None else nn.Identity()
+        self.gated_attn = bool(_cfg_get(cfg, "gated_attn", False))
+        if self.gated_attn:
+            self.W_g = nn.Linear(out_dim, num_heads, bias=False)
 
         self.attention = ScaledRangeFormerAttention(
             dim_h=out_dim,
@@ -690,6 +693,15 @@ class ScaledRangeFormerLayer(nn.Module):
         e_in1 = batch.get("pair_attr", None)
 
         h_attn_out, e_attn_out = self.attention(batch)
+
+        if self.gated_attn:
+            gate = torch.sigmoid(self.W_g(h_in1))
+            h_attn_out = h_attn_out.view(
+                -1, self.num_heads, h_attn_out.size(-1) // self.num_heads
+            )
+            h_attn_out = h_attn_out * gate.unsqueeze(-1)
+            h_attn_out = h_attn_out.flatten(1)
+
         h = self.O_h(F.dropout(h_attn_out, self.dropout, training=self.training))
         e = self.O_e(F.dropout(e_attn_out, self.dropout, training=self.training))
 

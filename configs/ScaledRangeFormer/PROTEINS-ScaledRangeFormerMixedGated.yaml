@@ -49,6 +49,7 @@ gt:
   batch_norm: True
   update_e: True
   attn_dropout: 0.1
+  gated_attn: True
   attn:
     clamp: 5.0
     act: relu
@@ -61,7 +62,7 @@ gt:
     spd_name: srf_spd
     spd_max_dist: 16
     thresholds: [0.3, 0.6, 1.0]
-    alphas: [1.0, 1.5, 2.0]
+    alphas: [1.0, 1.0, 1.0]
     scale_mode: percentile
     mask_mode: hard
     weight_in_softmax: False

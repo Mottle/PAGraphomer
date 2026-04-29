@@ -40,8 +40,8 @@ model:
   edge_decoding: dot
   graph_pooling: add
 gt:
-  layer_type: ScaledRangeFormerMixed
-  layers: 5
+  layer_type: ScaledRangeFormerShared
+  layers: 16
   n_heads: 4
   dim_hidden: 32
   dropout: 0.1
@@ -61,7 +61,7 @@ gt:
     spd_name: srf_spd
     spd_max_dist: 16
     thresholds: [0.3, 0.6, 1.0]
-    alphas: [1.0, 1.5, 2.0]
+    alphas: [1.0, 1.0, 1.0]
     scale_mode: percentile
     mask_mode: hard
     weight_in_softmax: False

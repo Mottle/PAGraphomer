@@ -117,3 +117,15 @@ def set_cfg_gt(cfg):
     cfg.gt.perm_lambda = 1.0
     cfg.gt.perm_mode = "none"
     cfg.gt.perm_pct = 20
+    cfg.gt.gated_attn = False
+
+    # GatedDeltaNet PE encoder dimensions
+    cfg.gt.pe_dim_x = 16
+    cfg.gt.pe_dim_rwse = 6
+    cfg.gt.pe_dim_lap = 6
+    cfg.gt.pe_dim_deg = 4
+
+    # GatedDeltaNet FLA parameters
+    cfg.gt.gdn_short_conv = False
+    cfg.gt.gdn_head_dim = 16
+    cfg.gt.gdn_expand_v = 2
