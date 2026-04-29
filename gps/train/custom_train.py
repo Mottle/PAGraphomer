@@ -29,6 +29,8 @@ def train_epoch(logger, loader, model, optimizer, scheduler, batch_accumulation)
             loss, pred_score = compute_loss(pred, true)
             _true = true.detach().to("cpu", non_blocking=True)
             _pred = pred_score.detach().to("cpu", non_blocking=True)
+        if hasattr(model, "_consistency_loss") and model._consistency_loss > 0:
+            loss = loss + model._consistency_loss
         loss.backward()
         # Parameters update after accumulating gradients for given num. batches.
         if ((iter + 1) % batch_accumulation == 0) or (iter + 1 == len(loader)):

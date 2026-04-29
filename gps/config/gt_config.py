@@ -110,3 +110,10 @@ def set_cfg_gt(cfg):
     cfg.gt.bigbird.block_size = 3
 
     cfg.gt.bigbird.layer_norm_eps = 1e-6
+
+    # GatedDeltaNet: permutation ensemble size (P)
+    cfg.gt.perm_ensemble = 1
+    # GatedDeltaNet: consistency regularization weight
+    cfg.gt.perm_lambda = 1.0
+    cfg.gt.perm_mode = "none"
+    cfg.gt.perm_pct = 20
