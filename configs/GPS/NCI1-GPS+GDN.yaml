@@ -39,8 +39,8 @@ model:
   edge_decoding: dot
   graph_pooling: add
 gt:
-  layer_type: GINE+Transformer
-  layers: 6
+  layer_type: GINE+GDN
+  layers: 4
   n_heads: 4
   dim_hidden: 32
   dropout: 0.1

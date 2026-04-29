@@ -138,6 +138,16 @@ class GPSLayer(nn.Module):
             bigbird_cfg.n_heads = num_heads
             bigbird_cfg.dropout = dropout
             self.self_attn = SingleBigBirdLayer(bigbird_cfg)
+        elif global_model_type == "GDN":
+            from fla.layers import GatedDeltaNet as FLA_GDN
+
+            self.self_attn = FLA_GDN(
+                hidden_size=dim_h,
+                num_heads=num_heads,
+                head_dim=16,
+                expand_v=2,
+                use_short_conv=False,
+            )
         else:
             raise ValueError(
                 f"Unsupported global x-former model: " f"{global_model_type}"
@@ -232,6 +242,8 @@ class GPSLayer(nn.Module):
                 h_attn = self.self_attn(h_dense, mask=mask)[mask]
             elif self.global_model_type == "BigBird":
                 h_attn = self.self_attn(h_dense, attention_mask=mask)
+            elif self.global_model_type == "GDN":
+                h_attn = self.self_attn(h_dense)[0][mask]
             else:
                 raise RuntimeError(f"Unexpected {self.global_model_type}")
 
