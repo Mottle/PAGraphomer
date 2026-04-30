@@ -173,13 +173,18 @@ class GatedDeltaNetModel(nn.Module):
         )
 
     def _perturb(self, x, pct):
-        noise = torch.rand(x.size(0), device=x.device) * pct / 100
-        idx = torch.argsort(torch.arange(x.size(0), device=x.device).float() + noise)
+        N = x.size(0)
+        k = min(max(1, int(N * pct / 100.0)), N // 2)
+        idx = torch.arange(N, device=x.device)
+        perm = torch.randperm(N, device=x.device)
+        swap_idx = perm[:k]
+        swap_with = perm[k : 2 * k]
+        idx[swap_idx], idx[swap_with] = idx[swap_with].clone(), idx[swap_idx].clone()
         return x[idx], idx
 
     def _invert_perm(self, idx):
         inv = torch.empty_like(idx)
-        inv[idx] = torch.arange(idx.size(0), device=idx.device)
+        inv[idx] = torch.arange(idx.size(0), device=idx.device, dtype=torch.long)
         return inv
 
     def forward(self, batch):
@@ -196,9 +201,10 @@ class GatedDeltaNetModel(nn.Module):
         pct = getattr(cfg.gt, "perm_pct", 20)
 
         if self.training and P > 1:
+            orig_x = batch.x
             all_logits = []
             for _ in range(P):
-                h, perm = self._perturb(batch.x, pct)
+                h, perm = self._perturb(orig_x, pct)
                 inv = self._invert_perm(perm)
                 ei = inv[edge_index]
                 for layer in self.layers:
