@@ -138,8 +138,8 @@ class GatedDeltaNetModel(nn.Module):
         self.use_std_enc = _use_standard_encoder()
         dual_fla = getattr(cfg.gt, "dual_fla", True)
         if self.use_std_enc:
-            self.encoder = FeatureEncoder(dim_in, dim_h)
-            self.total_pe_dim = dim_h
+            self.encoder = FeatureEncoder(dim_in)
+            self.total_pe_dim = self.encoder.dim_in
             self.proj = nn.Identity()
         else:
             self.encoder = GatedDeltaNetPEEncoder(dim_in, dim_h)
@@ -175,7 +175,12 @@ class GatedDeltaNetModel(nn.Module):
     def _perturb(self, x, pct):
         noise = torch.rand(x.size(0), device=x.device) * pct / 100
         idx = torch.argsort(torch.arange(x.size(0), device=x.device).float() + noise)
-        return x[idx]
+        return x[idx], idx
+
+    def _invert_perm(self, idx):
+        inv = torch.empty_like(idx)
+        inv[idx] = torch.arange(idx.size(0), device=idx.device)
+        return inv
 
     def forward(self, batch):
         batch = self.encoder(batch)
@@ -189,15 +194,15 @@ class GatedDeltaNetModel(nn.Module):
 
         P = max(getattr(cfg.gt, "perm_ensemble", 1), 1)
         pct = getattr(cfg.gt, "perm_pct", 20)
-        if self.training and P > 1 and edge_attr is not None:
-            P = 1
 
         if self.training and P > 1:
             all_logits = []
             for _ in range(P):
-                h = self._perturb(batch.x, pct)
+                h, perm = self._perturb(batch.x, pct)
+                inv = self._invert_perm(perm)
+                ei = inv[edge_index]
                 for layer in self.layers:
-                    h = layer(h, edge_index, edge_attr)
+                    h = layer(h, ei, edge_attr)
                 batch.x = h
                 pred, _ = self.head(batch)
                 all_logits.append(pred)

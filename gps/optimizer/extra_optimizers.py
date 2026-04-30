@@ -160,7 +160,6 @@ def scheduler_reduce_on_plateau(
         factor=reduce_factor,
         patience=schedule_patience,
         min_lr=min_lr,
-        verbose=True,
     )
     if not hasattr(scheduler, "get_last_lr"):
         # ReduceLROnPlateau doesn't have `get_last_lr` method as of current

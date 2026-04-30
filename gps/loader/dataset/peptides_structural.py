@@ -73,7 +73,7 @@ class PeptidesStructuralDataset(InMemoryDataset):
                 shutil.rmtree(self.folder)
 
         super().__init__(self.folder, transform, pre_transform)
-        self.data, self.slices = torch.load(self.processed_paths[0])
+        self.data, self.slices = torch.load(self.processed_paths[0], weights_only=False)
 
     @property
     def raw_file_names(self):
@@ -143,7 +143,7 @@ class PeptidesStructuralDataset(InMemoryDataset):
             data.edge_index = torch.from_numpy(graph["edge_index"]).to(torch.int64)
             data.edge_attr = torch.from_numpy(graph["edge_feat"]).to(torch.int64)
             data.x = torch.from_numpy(graph["node_feat"]).to(torch.int64)
-            data.y = torch.Tensor([y])
+            data.y = torch.tensor(y.values.astype(float)).view(1, -1)
 
             data_list.append(data)
 
