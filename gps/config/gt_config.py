@@ -129,3 +129,4 @@ def set_cfg_gt(cfg):
     cfg.gt.gdn_short_conv = False
     cfg.gt.gdn_head_dim = 16
     cfg.gt.gdn_expand_v = 2
+    cfg.gt.dual_fla = True

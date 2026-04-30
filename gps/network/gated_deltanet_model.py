@@ -8,6 +8,13 @@ from torch_geometric.utils import degree
 from torch_scatter import scatter_add
 
 from gps.head.san_graph import SANGraphHead
+from gps.network.gps_model import FeatureEncoder
+
+
+def _use_standard_encoder():
+    """Use standard FeatureEncoder for datasets with non-linear node encoders (e.g. PPANode)."""
+    enc_name = cfg.dataset.node_encoder_name
+    return enc_name not in ["LinearNode", "LinearNode+RWSE", "LinearNode+LapPE"]
 
 
 class GatedDeltaNetPEEncoder(nn.Module):
@@ -68,10 +75,11 @@ class GatedDeltaNetLayer(nn.Module):
             use_short_conv=use_sc,
         )
         self.gdn_global = FLA_GatedDeltaNet(**fla_kw)
-        self.gdn_struct = FLA_GatedDeltaNet(**fla_kw)
-        self.neighbor_proj = nn.Linear(dim_h, dim_h, bias=False)
-
-        self.edge_to_node_proj = nn.Linear(dim_h, dim_h, bias=False)
+        self.dual_fla = getattr(cfg.gt, "dual_fla", True)
+        self.gdn_struct = FLA_GatedDeltaNet(**fla_kw) if self.dual_fla else None
+        if self.dual_fla:
+            self.edge_to_node_proj = nn.Linear(dim_h, dim_h, bias=False)
+            self.neighbor_proj = nn.Linear(dim_h, dim_h, bias=False)
 
         self.norm1 = nn.LayerNorm(dim_h)
         self.norm2 = nn.LayerNorm(dim_h)
@@ -88,25 +96,27 @@ class GatedDeltaNetLayer(nn.Module):
         h_in = h
         src, dst = edge_index
 
-        if edge_attr is not None:
-            if edge_attr.dim() == 1:
-                edge_attr = edge_attr.view(-1, 1).float()
-            node_edge_feat = scatter_add(
-                edge_attr.expand(-1, D) if edge_attr.size(1) == 1 else edge_attr,
-                dst,
-                dim=0,
-                dim_size=N,
-            )
-            h = h + self.edge_to_node_proj(node_edge_feat)
-
-        neighbor_msg = self.neighbor_proj(h[src])
-        h_neighbor = scatter_add(neighbor_msg, dst, dim=0, dim_size=N)
-        deg = scatter_add(
-            torch.ones(edge_index.size(1), device=h.device), dst, dim_size=N
-        ).view(-1, 1)
-        h_neighbor = h_neighbor / (deg + 1e-8)
-        h_struct, *_ = self.gdn_struct(h_neighbor.unsqueeze(0))
-        h_struct = h_struct.squeeze(0)
+        h_struct = torch.zeros_like(h)
+        if self.dual_fla:
+            h_for_struct = h
+            if edge_attr is not None:
+                if edge_attr.dim() == 1:
+                    edge_attr = edge_attr.view(-1, 1).float()
+                node_edge_feat = scatter_add(
+                    edge_attr.expand(-1, D) if edge_attr.size(1) == 1 else edge_attr,
+                    dst,
+                    dim=0,
+                    dim_size=N,
+                )
+                h_for_struct = h + self.edge_to_node_proj(node_edge_feat)
+            neighbor_msg = self.neighbor_proj(h_for_struct[src])
+            h_neighbor = scatter_add(neighbor_msg, dst, dim=0, dim_size=N)
+            deg = scatter_add(
+                torch.ones(edge_index.size(1), device=h.device), dst, dim_size=N
+            ).view(-1, 1)
+            h_neighbor = h_neighbor / (deg + 1e-8)
+            h_struct, *_ = self.gdn_struct(h_neighbor.unsqueeze(0))
+            h_struct = h_struct.squeeze(0)
 
         h_global, *_ = self.gdn_global(h.unsqueeze(0))
         h_global = h_global.squeeze(0)
@@ -125,17 +135,24 @@ class GatedDeltaNetModel(nn.Module):
         dropout = float(getattr(cfg.gt, "dropout", 0.1))
         n_heads = cfg.gt.n_heads
 
-        self.encoder = GatedDeltaNetPEEncoder(dim_in, dim_h)
-        self.total_pe_dim = self.encoder.total_dim
-        self.proj = (
-            nn.Identity()
-            if self.total_pe_dim == dim_h
-            else nn.Linear(self.total_pe_dim, dim_h)
-        )
+        self.use_std_enc = _use_standard_encoder()
+        dual_fla = getattr(cfg.gt, "dual_fla", True)
+        if self.use_std_enc:
+            self.encoder = FeatureEncoder(dim_in, dim_h)
+            self.total_pe_dim = dim_h
+            self.proj = nn.Identity()
+        else:
+            self.encoder = GatedDeltaNetPEEncoder(dim_in, dim_h)
+            self.total_pe_dim = self.encoder.total_dim
+            self.proj = (
+                nn.Identity()
+                if self.total_pe_dim == dim_h
+                else nn.Linear(self.total_pe_dim, dim_h)
+            )
 
         self.edge_encoder = None
         self.edge_dim = 0
-        if cfg.dataset.edge_encoder:
+        if not self.use_std_enc and cfg.dataset.edge_encoder:
             if "PNA" in cfg.gt.layer_type:
                 self.edge_dim = min(128, cfg.gnn.dim_inner)
             else:
