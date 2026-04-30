@@ -1,18 +1,16 @@
-# PAGraphomer - Agent Guidelines
+# GPS Repository - Agent Guidelines
 
-**Updated:** 2026-04-30  
+**Generated:** 2026-04-04  
 **Commit:** unknown (HEAD)  
 **Branch:** unknown
 
 ## OVERVIEW
 
-PAGraphomer is a PyTorch Geometric-based GNN framework for graph property prediction with self-attention, positional encodings (RWSE, LapPE, EquivStableLapPE, SignNet), and specialized architectures for molecular and graph-level tasks.
+GPS (Graph Positional Encoding with Self-Attention) is a PyTorch Geometric-based GNN framework implementing multiple positional encodings (RWSE, LapPE, EquivStableLapPE, SignNet) with transformer-style attention for graph representation learning.
 
-**Core Stack**: PyTorch + PyTorch Geometric + GraphGym + FLA (Flash Linear Attention) + pixi
+**Core Stack**: PyTorch + PyTorch Geometric + GraphGym + pixi (not conda/pip)
 
-**Key Models**: GPS, SRF (ScaledRangeFormer), GDN (GatedDeltaNet), PAG, OTFormer, SAN, GatedGCN, GINE, GCN
-
-**Active Development**: GDN V5 (dual FLA + structural injection), SRF×RUM (design phase)
+**Key Models**: GPS, PAG, OTFormer, SAN, GatedGCN, GINE, Graphormer
 
 ## STRUCTURE
 
@@ -35,12 +33,9 @@ PAGraphomer is a PyTorch Geometric-based GNN framework for graph property predic
 | **Train model** | `main.py` | Extends `torch_geometric.graphgym` |
 | **Model architecture** | `gps/network/` | Uses `@register_network` decorators |
 | **GNN layers** | `gps/layer/` | GPSLayer, PAGLayer, RUM, OTFormerLayer, etc. |
-| **GatedDeltaNet** | `gps/network/gated_deltanet_model.py` | GDN V2/V5 — FLA linear attention with PE |
-| **ScaledRangeFormer** | `gps/layer/scaled_range_former_layer.py` | SRF — RRWP multi-scale attention (4 variants) |
-| **GNN layers** | `gps/layer/` | GPSLayer, PAGLayer, RUM, OTFormerLayer, SRF, etc. |
 | **Data loading** | `gps/loader/` | Master loader with 15+ dataset formats |
 | **Positional encodings** | `gps/encoder/`, `gps/transform/posenc_stats.py` | RWSE, LapPE, SignNet, etc. |
-| **Configs** | `configs/{model_type}/` | Organized by architecture (GPS/, SAN/, PAG/, OTFormer/, GDN/, etc.) |
+| **Configs** | `configs/{model_type}/` | Organized by architecture (GPS/, SAN/, PAG/, OTFormer/, etc.) |
 | **Training loops** | `gps/train/custom_train.py` | 5 registered trainers via `@register_train` |
 | **OTFormer pretraining** | `gps/train/otformer_pretrain.py` | Custom pretraining loop for OTFormer |
 | **Utilities** | `gps/utils.py` | Core utilities (negate_edge_index, flatten_dict, etc.) |
@@ -147,29 +142,6 @@ PAGraphomer is a PyTorch Geometric-based GNN framework for graph property predic
 **6. BigBird Block-Sparse Attention**
 - `bigbird_layer.py` (1932 lines) - 5-part attention computation
 - Each query block (first, second, middle, second-last, last) uses different patterns
-
-**7. GDN Dual-FLA (V5) Architecture**
-- `gps/network/gated_deltanet_model.py` — GatedDeltaNet with structural graph injection
-- **V2**: Baseline FLA linear attention (no structure), perm_ensemble=2 regularization
-- **V5**: Dual FLA pathways — neighbor aggregation (path A) + edge-to-node features (path B)
-  - Path A: neighbor mean aggregation → FLA attention (structural pathway, enabled by `cfg.gt.dual_fla: True`)
-  - Path B: edge features → scatter to nodes → residual input enhancement
-  - Auto-disables perm_ensemble when edge_encoder is enabled
-  - Uses standard `FeatureEncoder` for datasets with custom node encoders (Atom, PPANode, etc.)
-- **Custom config keys** (registered in `gps/config/gt_config.py`):
-  - `cfg.gt.dual_fla` (default True)
-  - `cfg.gt.pe_dim_x` (default 16), `cfg.gt.pe_dim_rwse` (default 6), `cfg.gt.pe_dim_lap` (default 6), `cfg.gt.pe_dim_deg` (default 4)
-  - `cfg.gt.gdn_short_conv` (default False), `cfg.gt.gdn_head_dim` (default 16), `cfg.gt.gdn_expand_v` (default 2)
-
-**8. SRF×RUM Design Document**
-- `docs/SRFxRUM_design.md` — Planned architecture combining ScaledRangeFormer (RRWP multi-scale attention) with RUM (random walk path encoding) as parallel intertwined pathways
-- Three variants: Gate Fusion (V1), Attention Guidance (V2), Bidirectional Modulation (V3)
-- Not yet implemented
-
-**9. Results Tracking**
-- `results/ALL_EXPERIMENTS.md` — Comprehensive summary of all 44+ experiments
-- `results/NCI1_5fold_final.md` — NCI1 15-model comparison
-- `results/GDN_analysis.md` — GDN architecture analysis + graph injection designs
 
 ## COMMANDS
 
@@ -387,9 +359,8 @@ class TestMyFunction(unittest.TestCase):
 
 **3. `gps/loader/master_loader.py` (698 lines)**
 - Orchestrates 15+ dataset formats (PyG-ZINC, OGB, PyG-AQSOL, etc.)
-- PE precomputation integration, split generation logic
-- **OGB Peptides**: `peptides-functional` (multilabel, metric=AP), `peptides-structural` (regression, metric=MAE)
-- **Memory note**: `ogbg-ppa` needs >64GB RAM (38.5M nodes → OOM on 31GB)
+- PE precomputation integration
+- Split generation logic with multiple modes
 
 **4. `gps/network/otformer_model.py` (596 lines)**
 - OTFormer (Optimal Transport Transformer) architecture
