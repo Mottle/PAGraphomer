@@ -1,16 +1,14 @@
 # GPS Repository - Agent Guidelines
 
-**Generated:** 2026-04-04  
-**Commit:** unknown (HEAD)  
-**Branch:** unknown
+**Generated:** 2026-05-01  **Commit:** cd5e095  **Branch:** master
 
 ## OVERVIEW
 
-GPS (Graph Positional Encoding with Self-Attention) is a PyTorch Geometric-based GNN framework implementing multiple positional encodings (RWSE, LapPE, EquivStableLapPE, SignNet) with transformer-style attention for graph representation learning.
+GPS (Graph Positional Encoding with Self-Attention) is a PyTorch Geometric-based GNN framework with multiple positional encodings and transformer-style attention for graph representation learning.
 
-**Core Stack**: PyTorch + PyTorch Geometric + GraphGym + pixi (not conda/pip)
+**Core Stack**: PyTorch + PyTorch Geometric + GraphGym + pixi
 
-**Key Models**: GPS, PAG, OTFormer, SAN, GatedGCN, GINE, Graphormer
+**Key Models**: GPS, PAG, OTFormer, SAN, GatedGCN, GINE, Graphormer, **GatedDeltaNet**, **ScaledRangeFormer**, **GRIT**
 
 ## STRUCTURE
 
@@ -18,11 +16,17 @@ GPS (Graph Positional Encoding with Self-Attention) is a PyTorch Geometric-based
 ./
 ├── main.py                 # Entry point (GraphGym extension)
 ├── gps/                    # Main package (modular, auto-imports)
-├── configs/                # YAML configs by model type (GPS, SAN, PAG, OTFormer, etc.)
-├── run/                    # SLURM batch scripts (HPC-focused)
-├── tests/                  # Integration tests + configs
+│   ├── network/            # Model architectures
+│   ├── layer/              # GNN layers
+│   ├── encoder/            # Node/edge/PE encoders
+│   ├── loader/             # Data loading
+│   ├── train/              # Training loops
+│   └── transform/          # Graph transforms + PE stats
+├── configs/                # YAML configs by model type
+├── run/                    # SLURM batch scripts
+├── tests/                  # Integration tests
 ├── unittests/              # Unit tests (unittest framework)
-├── datasets/               # Local dataset storage (raw + processed)
+├── datasets/               # Local dataset storage
 └── results/                # Experiment outputs
 ```
 
@@ -30,55 +34,40 @@ GPS (Graph Positional Encoding with Self-Attention) is a PyTorch Geometric-based
 
 | Task | Location | Notes |
 |------|----------|-------|
-| **Train model** | `main.py` | Extends `torch_geometric.graphgym` |
-| **Model architecture** | `gps/network/` | Uses `@register_network` decorators |
-| **GNN layers** | `gps/layer/` | GPSLayer, PAGLayer, RUM, OTFormerLayer, etc. |
-| **Data loading** | `gps/loader/` | Master loader with 15+ dataset formats |
-| **Positional encodings** | `gps/encoder/`, `gps/transform/posenc_stats.py` | RWSE, LapPE, SignNet, etc. |
-| **Configs** | `configs/{model_type}/` | Organized by architecture (GPS/, SAN/, PAG/, OTFormer/, etc.) |
-| **Training loops** | `gps/train/custom_train.py` | 5 registered trainers via `@register_train` |
-| **OTFormer pretraining** | `gps/train/otformer_pretrain.py` | Custom pretraining loop for OTFormer |
-| **Utilities** | `gps/utils.py` | Core utilities (negate_edge_index, flatten_dict, etc.) |
-| **Testing** | `unittests/` | Uses unittest (not pytest) |
+| Train model | `main.py` | Extends `torch_geometric.graphgym` |
+| Model architecture | `gps/network/` | `@register_network` decorators |
+| GNN layers | `gps/layer/` | GPSLayer, PAGLayer, RUM, OTFormerLayer, etc. |
+| Data loading | `gps/loader/` | Master loader with 15+ dataset formats |
+| Positional encodings | `gps/encoder/`, `gps/transform/posenc_stats.py` | RWSE, LapPE, SignNet, RRWP, SPD |
+| Configs | `configs/{model_type}/` | Organized by architecture |
+| Training loops | `gps/train/custom_train.py` | 5 registered trainers |
+| OTFormer pretraining | `gps/train/otformer_pretrain.py` | Custom pretraining loop |
+| Utilities | `gps/utils.py` | Core utilities |
+| Testing | `unittests/` | Uses unittest (not pytest) |
 
-## CONVENTIONS (Deviations from Standard)
+## CONVENTIONS
 
 **1. Dual Test Directories**
-- `tests/` = Integration tests + shell scripts + config tests
-- `unittests/` = Unit tests (uses unittest framework, not pytest)
-- 二次元构造: 大多数项目只有一个test目录
+- `tests/` = Integration tests + shell scripts
+- `unittests/` = Unit tests (unittest framework)
 
 **2. Config Organization by Model Type**
-- Standard: Group by dataset/task (zinc/, ogbg-molhiv/)
-- This project: Group by architecture (GPS/, SAN/, PAG/, OTFormer/, GatedGCN/, Graphormer/, GINE/)
-- **Why**: Facilitates comparison of architectures on same datasets
+- Standard: Group by dataset/task
+- This project: Group by architecture (GPS/, SAN/, PAG/, OTFormer/, GatedDeltaNet/, ScaledRangeFormer/, GRIT/, GatedGCN/, Graphormer/, GINE/)
 
 **3. Layer Subdirectory Pattern**
-- `gps/layer/` has flat files + nested subdirs (`rum/`, `pag/`)
-  - `rum/` has empty `__init__.py` for standalone import pattern (tests use `from rum.layers`)
-  - `pag/` lacks `__init__.py` (implicit namespace package)
-- Subdirectories handle specialized architectures (RUM, PAG, OTFormer)
+- `gps/layer/rum/` has empty `__init__.py` (standalone import: `from rum.layers`)
+- `gps/layer/pag/` lacks `__init__.py` (implicit namespace package)
 
-**4. Example Files Everywhere**
-- Each submodule has `example.py` (e.g., `gps/layer/example.py`, `gps/network/example.py`)
-- These are **templates** not executable examples
-- Unusual pattern - most projects centralize examples
-
-**5. Pixi for Environment Management**
+**4. Pixi for Environment Management**
 - Uses `pixi.toml` instead of conda/pip/poetry
-- No `setup.py`, `pyproject.toml`, or `requirements.txt`
-- Command: `pixi install`, `pixi shell`, `pixi run python main.py ...`
+- Commands: `pixi install`, `pixi shell`, `pixi run python main.py ...`
 
-**6. GraphGym Extension Pattern**
-- Imports from `torch_geometric.graphgym.*`
-- Uses `@register_*` decorators extensively:
-  - `@register_network` for models
-  - `@register_train` for training loops  
-  - `@register_loader` for datasets
-  - `@register_config` for config extensions
-- Custom training modes via `cfg.train.mode` (`standard` vs `custom`)
+**5. GraphGym Extension Pattern**
+- Uses `@register_*` decorators: `@register_network`, `@register_train`, `@register_loader`, `@register_config`
+- Custom training modes: `cfg.train.mode` (`standard` vs `custom`)
 
-**7. Module Auto-Discovery**
+**6. Module Auto-Discovery**
 - All subpackages use identical glob pattern in `__init__.py`:
   ```python
   from os.path import dirname, basename, isfile, join
@@ -86,28 +75,21 @@ GPS (Graph Positional Encoding with Self-Attention) is a PyTorch Geometric-based
   modules = glob.glob(join(dirname(__file__), "*.py"))
   __all__ = [basename(f)[:-3] for f in modules if isfile(f) and not f.endswith("__init__.py")]
   ```
-- New files automatically imported without modifying `__init__.py`
-- **CRITICAL**: This pattern is used in ALL `gps/` subdirectories
 
-**8. Layer Type String Format**
+**7. Layer Type String Format**
 - Configs use: `layer_type: {local_gnn}+{global_model}`
 - Examples: `GINE+Transformer`, `None+Transformer`, `GatedGCN+BigBird`
 - Parsed as: `local_gnn_type, global_model_type = macro_gps_layer_type.split("+")`
 
-**9. PAG Custom Configuration**
-- PAG configs have custom `pag:` section (not under `model:`)
-- Nested structure: `pag.layer_defaults.macro`, `pag.layer_defaults.local`, etc.
-- Located in `configs/PAG/` directory
+**8. Custom Config Sections**
+- **PAG**: `pag:` section (not under `model:`), nested: `pag.layer_defaults.macro`, `pag.layer_defaults.local`
+- **OTFormer**: `otformer:` section with `otformer.motif:` (Sinkhorn OT) and `otformer.pretrain:` (pretraining tasks)
+- **GatedDeltaNet**: `gt:` section with `dual_fla`, `perm_ensemble`, `perm_lambda`, `perm_mode`, `perm_pct`
+- **ScaledRangeFormer**: `layer_type` variants: `Shared`, `Mixed`, `Sequential`, `Bypass`
+- **GRIT**: `layer_type: GRIT` + `posenc_RRWP` for relative random walk positional encoding
 
-**10. OTFormer Custom Configuration**
-- OTFormer configs have custom `otformer:` section
-- Dual sub-sections: `otformer.motif:` (Sinkhorn OT), `otformer.pretrain:` (pretraining tasks)
-- Pretraining modes: `joint`, `atom_only`, `motif_only`, `edge_only`, `no_ot`
-- Located in `configs/OTFormer/` directory
+## ANTI-PATTERNS
 
-## ANTI-PATTERNS (THIS PROJECT)
-
-**DO NOT:**
 - Use `X | None` type hints - use `Optional[X]` (Python 3.13 compatibility)
 - Add `__init__.py` to `gps/layer/pag/` (relies on implicit namespace package)
 - Export from `gps/layer/rum/__init__.py` (intentionally empty)
@@ -116,32 +98,6 @@ GPS (Graph Positional Encoding with Self-Attention) is a PyTorch Geometric-based
 
 **CRITICAL WARNING** (`gps/config/defaults_config.py` lines 9-12):
 > "At the time of writing, the order in which custom config-setting functions like this one are executed is random... Therefore never reset here config options that are custom added, only change those that exist in core GraphGym."
-
-## UNIQUE STYLES
-
-**1. Layer Type String Format**
-- Configs use: `layer_type: None+Transformer` or `layer_type: GINE+Transformer`
-- Parsed as: `local_gnn_type, global_model_type = macro_gps_layer_type.split("+")`
-
-**2. PAG Configuration**
-- Custom section under `pag:` (not `model:`)
-- Nested: `pag.layer_defaults.macro`, `pag.layer_defaults.local`, etc.
-
-**3. OTFormer Configuration**
-- Custom section under `otformer:` (not `model:`)
-- Dual sub-sections: `otformer.motif:` for Sinkhorn OT settings, `otformer.pretrain:` for pretraining tasks
-- Pretraining modes: `joint`, `atom_only`, `motif_only`, `edge_only`, `no_ot`
-
-**4. RUM Test Import Pattern**
-- Tests use: `from rum.layers import RUMLayer` (not `gps.layer.rum.layers`)
-- Works because tests run from within `rum/` directory context
-
-**5. Chinese Comments in PAG**
-- `path_attention.py` has Chinese comments (e.g., "计算注意力权重的熵极小化损失")
-
-**6. BigBird Block-Sparse Attention**
-- `bigbird_layer.py` (1932 lines) - 5-part attention computation
-- Each query block (first, second, middle, second-last, last) uses different patterns
 
 ## COMMANDS
 
@@ -152,287 +108,120 @@ pixi shell          # Activate environment
 
 # Training
 pixi run python main.py --cfg configs/GPS/zinc-GPS+RWSE.yaml wandb.use=False
-pixi run python main.py --cfg configs/GPS/zinc-GPS+RWSE.yaml --repeat 5 wandb.use=False
 
 # Testing
-python -m pytest unittests/
 python -m unittest discover -s unittests
 python -m unittest unittests.test_eigvecs
 
-# Batch execution (HPC/SLURM)
+# Batch execution
 ./run/run_experiments.sh
 ```
 
-## NOTES
+## KEY MODELS
 
-**Complexity Hotspots:**
-1. `bigbird_layer.py` (1932 lines) - Google Research BigBird port
-2. `performer_layer.py` (796 lines) - Performer linear attention
-3. `master_loader.py` (698 lines) - 15+ dataset format handling
-4. `pcqm4mv2_contact.py` (560 lines) - Link prediction with custom negative sampling
+### GPSModel
+- Core model combining local GNN + global attention
+- Node/edge encoders + GPSLayer stack + graph head
+- Configs in `configs/GPS/`
 
-**Hidden Patterns:**
-- RUM submodule has empty `__init__.py` - tests import via `from rum.layers`
-- PAG uses implicit namespace package (no `__init__.py`)
-- Custom training modes: `standard` vs `custom` in `cfg.train.mode`
+### PAGModel
+- Path Attention Graph extending GPSModel
+- Uses PAGLayer with RUMModel and path attention
+- Custom `pag:` config section
+- Configs in `configs/PAG/`
 
-**Cross-Module Dependencies:**
-- `gps/network/pag_model.py` imports from `gps.layer.pag.fusion`, `gps.layer.pag_layer`, etc.
-- `gps/train/custom_train.py` uses `gps.utils`, `gps.loss`, `gps.logger`
-- All modules auto-discovered via glob pattern in respective `__init__.py`
+### OTFormerModel
+- Optimal Transport Transformer with Sinkhorn OT for motif matching
+- Pretraining tasks: masked atom, motif prediction, edge denoising, OT prior loss
+- Custom `otformer:` config section
+- Configs in `configs/OTFormer/`
 
-## Code Style Guidelines
+### GatedDeltaNet (GDN)
+- Fast Linear Attention with gated delta mechanism from `fla.layers`
+- V5: Dual FLA (global + structural) with edge-to-node aggregation + neighbor mean
+- Permutation ensemble for data augmentation (edge-safe partial permutation)
+- Custom `gt:` config parameters: `dual_fla`, `perm_ensemble`, `perm_lambda`, `perm_mode`, `perm_pct`
+- Configs in `configs/GatedDeltaNet/`
 
-### Formatting
+### ScaledRangeFormer
+- Multi-scale graph transformer with distance masking
+- Layer variants: Shared, Mixed, Sequential, Bypass
+- Configs in `configs/ScaledRangeFormer/`
 
-- **Use Black** for code formatting (version >= 26.1.0)
-- Maximum line length: 88 characters (Black default)
-- Run `black .` before committing
-
-### Import Order
-
-1. Standard library imports
-2. Third-party imports (torch, numpy, sklearn, etc.)
-3. Local/graphgps imports
-
-```python
-# Good example
-import os
-import logging
-from typing import List, Optional
-
-import torch
-import torch.nn as nn
-import numpy as np
-from sklearn.metrics import mean_squared_error
-
-import graphgps
-from graphgps.logger import CustomLogger
-from graphgps.metrics_ogb import some_metric
-```
-
-### Naming Conventions
-
-- **Variables/functions**: `snake_case` (e.g., `def get_feature_encoder()`)
-- **Classes**: `PascalCase` (e.g., `class GPSLayer(nn.Module)`)
-- **Constants**: `UPPER_SNAKE_CASE` (e.g., `MAX_HIDDEN_DIM = 256`)
-- **Private methods**: prefix with underscore (e.g., `_compute_embedding()`)
-
-### Type Hints
-
-- Add type hints for function parameters and return values when beneficial
-- Use `Optional[X]` instead of `X | None` for Python 3.13 compatibility
-- Common types: `List`, `Dict`, `Tuple`, `Optional`, `Union`
-
-```python
-def process_graph(
-    x: torch.Tensor,
-    edge_index: torch.Tensor,
-    num_nodes: Optional[int] = None,
-) -> Dict[str, torch.Tensor]:
-    ...
-```
-
-### Error Handling
-
-- Use specific exceptions instead of bare `except:`
-- Include meaningful error messages
-- Validate inputs at function boundaries
-
-```python
-# Good
-def load_config(cfg_path: str) -> dict:
-    if not os.path.exists(cfg_path):
-        raise FileNotFoundError(f"Config file not found: {cfg_path}")
-    ...
-
-# Avoid
-def load_config(cfg_path):
-    try:
-        ...
-    except:
-        pass
-```
-
-### PyTorch Conventions
-
-- Use `nn.Module` for neural network layers
-- Call `super().__init__()` in `__init__` methods
-- Use `self.register_buffer()` for non-learnable tensors
-- Use `self.register_parameter()` for learnable parameters
-
-```python
-class CustomLayer(nn.Module):
-    def __init__(self, in_dim: int, out_dim: int):
-        super().__init__()
-        self.linear = nn.Linear(in_dim, out_dim)
-        self.norm = nn.BatchNorm1d(out_dim)
-        self.register_buffer('scale', torch.ones(1))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.norm(self.linear(x)) * self.scale
-```
-
-### Logging
-
-- Use the logging module for important information
-- Use appropriate log levels: `logging.debug()`, `logging.info()`, `logging.warning()`, `logging.error()`
-- Include context in log messages
-
-```python
-logger = logging.getLogger(__name__)
-
-logger.info(f"Loaded dataset '{dataset_name}' with {num_graphs} graphs")
-logger.warning(f"Expected undirected edges, got {num_directed} directed edges")
-```
-
-### Documentation
-
-- Use docstrings for public functions and classes
-- Follow Google or NumPy docstring style
-- Include Args, Returns, and Raises sections for complex functions
-
-```python
-def compute_positional_encoding(
-    edge_index: torch.Tensor,
-    num_nodes: int,
-    dim_pe: int,
-) -> torch.Tensor:
-    """Compute random walk structural encoding for graph nodes.
-
-    Args:
-        edge_index: Graph edge indices (2, num_edges)
-        num_nodes: Number of nodes in the graph
-        dim_pe: Dimension of positional encoding
-
-    Returns:
-        Positional encoding tensor of shape (num_nodes, dim_pe)
-    """
-    ...
-```
-
-### Git Conventions
-
-- Make focused, atomic commits
-- Use meaningful commit messages
-- Do not commit large files, generated outputs, or sensitive data
-- Add relevant file patterns to `.gitignore`
-
-### Performance Considerations
-
-- Use `torch.no_grad()` for inference
-- Use `@torch.jit.script` for performance-critical functions
-- Prefer in-place operations when safe (e.g., `x.relu_()` vs `F.relu(x)`)
-- Use `torch.jit.script` for model inference when possible
-
-### Testing Guidelines
-
-- Place tests in `unittests/` directory
-- Use `unittest.TestCase` class structure
-- Test edge cases and error conditions
-- Use `torch.testing.assert_close()` for tensor comparisons
-- Use `np.testing.assert_array_almost_equal()` for numpy arrays
-
-```python
-class TestMyFunction(unittest.TestCase):
-    def test_basic_case(self):
-        result = my_function(input_data)
-        expected = torch.tensor([1.0, 2.0, 3.0])
-        torch.testing.assert_close(result, expected)
-
-    def test_error_case(self):
-        with self.assertRaises(ValueError):
-            my_function(invalid_input)
-```
+### GRIT
+- Graph Rewiring with Iterative Transformer
+- RRWP (Relative Random Walk Positional Encoding) integration
+- Supports pretraining and finetuning
+- Configs in `configs/GRIT/`
 
 ## COMPLEXITY HOTSPOTS
 
-**1. `gps/layer/bigbird_layer.py` (1932 lines)**
-- Google Research BigBird block-sparse attention port
-- 5-part attention computation (first, second, middle, second-last, last blocks)
-- Complex mask handling and random block planning
+| File | Lines | Description |
+|------|-------|-------------|
+| `gps/layer/bigbird_layer.py` | 1932 | Google Research BigBird port, 5-part attention |
+| `gps/layer/performer_layer.py` | 796 | Performer linear attention (FAVOR+) |
+| `gps/network/grit_model.py` | 795 | GRIT transformer with RRWP encoding |
+| `gps/layer/scaled_range_former_layer.py` | 766 | Multi-scale graph transformer |
+| `gps/loader/master_loader.py` | 698 | 15+ dataset format handling |
+| `gps/network/otformer_model.py` | 596 | OTFormer with Sinkhorn OT |
+| `gps/loader/dataset/pcqm4mv2_contact.py` | 556 | Link prediction with negative sampling |
+| `gps/transform/posenc_stats.py` | 439 | Centralized PE statistics computation |
+| `gps/train/custom_train.py` | 407 | Custom training loop for PAG/OTFormer |
+| `gps/encoder/signnet_pos_encoder.py` | 387 | Sign-invariant eigenvector encoder |
 
-**2. `gps/layer/performer_layer.py` (796 lines)**
-- Performer linear attention (FAVOR+ mechanism)
-- Random feature maps for kernel approximation
-- Memory-efficient attention for long sequences
+## HIDDEN PATTERNS
 
-**3. `gps/loader/master_loader.py` (698 lines)**
-- Orchestrates 15+ dataset formats (PyG-ZINC, OGB, PyG-AQSOL, etc.)
-- PE precomputation integration
-- Split generation logic with multiple modes
+- RUM submodule: empty `__init__.py`, tests import via `from rum.layers`
+- PAG: implicit namespace package (no `__init__.py`)
+- Custom training modes: `standard` vs `custom` in `cfg.train.mode`
+- GatedDeltaNet uses `FLA_GatedDeltaNet` from external `fla.layers` package
+- GDN V5 dual-FLA: global FLA + structural FLA with edge-to-node aggregation
+- Permutation ensemble: partial permutation with edge-safe node remapping
+- ScaledRangeFormerModel inherits from `gps.network.grit_model.GritTransformer`
 
-**4. `gps/network/otformer_model.py` (596 lines)**
-- OTFormer (Optimal Transport Transformer) architecture
-- Sinkhorn optimal transport for motif matching
-- Dual-track transformer with recycling mechanism
+## CODE STYLE
 
-**5. `gps/loader/dataset/pcqm4mv2_contact.py` (556 lines)**
-- PCQM4Mv2 contact prediction dataset
-- Custom negative sampling for link prediction
-- Complex edge feature generation
+### Formatting
+- **Use Black** (version >= 26.1.0), max line length 88
+- Run `black .` before committing
 
-**6. `gps/transform/posenc_stats.py` (439 lines)**
-- Centralized PE statistics computation
-- Eigen-decomposition for LapPE with 6 normalization schemes
-- Random walk landing probabilities for RWSE
-- 7 PE type implementations with shared components
+### Import Order
+1. Standard library imports
+2. Third-party imports (torch, numpy, sklearn)
+3. Local/graphgps imports
 
-**7. `gps/train/custom_train.py` (407 lines)**
-- Custom training loop for PAG/OTFormer models
-- 5 registered trainers via `@register_train`
-- Integration with GraphGym's training infrastructure
+### Naming Conventions
+- Variables/functions: `snake_case`
+- Classes: `PascalCase`
+- Constants: `UPPER_SNAKE_CASE`
+- Private methods: prefix with underscore
 
-**8. `gps/encoder/signnet_pos_encoder.py` (387 lines)**
-- Sign-invariant encoder for eigenvectors
-- Handles sign ambiguity (±v) of Laplacian eigenvectors
-- `GINDeepSigns` and `MaskedGINDeepSigns` variants
+### Type Hints
+- Use `Optional[X]` instead of `X | None` (Python 3.13 compatibility)
+- Common types: `List`, `Dict`, `Tuple`, `Optional`, `Union`
 
-## Common Patterns
+### PyTorch Conventions
+- Use `nn.Module` for layers, call `super().__init__()`
+- Use `self.register_buffer()` for non-learnable tensors
+- Use `self.register_parameter()` for learnable parameters
 
-### Config-Based Training
+### Error Handling
+- Use specific exceptions with meaningful messages
+- Validate inputs at function boundaries
 
-The project uses YACS configuration system. Configs are stored in YAML files under `configs/`. Key config sections:
+### Testing
+- Place tests in `unittests/` directory
+- Use `unittest.TestCase` class structure
+- Use `torch.testing.assert_close()` for tensor comparisons
+- Use `np.testing.assert_array_almost_equal()` for numpy arrays
 
-- `dataset`: Data loading and preprocessing
-- `model`: Model architecture
-- `train`: Training loop settings
-- `optim`: Optimizer and scheduler
+### Git
+- Make focused, atomic commits
+- Use meaningful commit messages
+- Do not commit large files, generated outputs, or secrets
+- Add relevant patterns to `.gitignore`
 
-### Positional Encodings
-
-This project implements multiple positional encodings:
-- `RWSE`: Random Walk Structural Encoding
-- `LapPE`: Laplacian Positional Encoding
-- `EquivStableLapPE`: Equivariant Stable Laplacian PE
-- `SignNet`: Signnet positional encoding
-
-### Model Architecture
-
-The main model is `GPSModel` combining:
-- Node/edge encoders
-- Multiple `GPSLayer` layers (GNN + attention)
-- Graph head for final prediction
-
-### OTFormer Architecture
-
-OTFormer (Optimal Transport Transformer) is a specialized model using Sinkhorn optimal transport for motif matching:
-
-**Core Components**:
-- **Sinkhorn Algorithm**: Entropy-regularized optimal transport for matching paths to motifs
-- **OTMotifMemory**: Learnable motif memory matched via OT to random walk paths
-- **OTFormerBlock**: Dual-track transformer processing node and pair representations
-- **RUM Model**: Random Walk Model for path feature extraction
-- **Recycling Mechanism**: Iterative refinement of representations
-
-**Pretraining Tasks**:
-1. **Masked Atom Prediction**: Predict masked atom types (molecular graphs)
-2. **Motif Prediction**: Predict motif membership from OT assignments
-3. **Edge Denoising**: Distinguish true edges from noise (perturbed edges)
-4. **OT Prior Loss**: Regularize transport matrix to minimize transport cost
-
-**Integration**:
-- Follows same registration pattern as GPSModel, PAGModel
-- Uses shared `FeatureEncoder` from `gps_model.py`
-- Custom config section: `otformer:` with `motif:` and `pretrain:` sub-sections
-- Located in `configs/OTFormer/` directory
+### Performance
+- Use `torch.no_grad()` for inference
+- Prefer in-place operations when safe
+- Use `@torch.jit.script` for performance-critical functions
