@@ -68,6 +68,12 @@ class OTFormerModel(torch.nn.Module):
 
         dim_h = cfg.gnn.dim_inner
         self.dim_h = dim_h
+        dim_z = getattr(cfg.otformer, "dim_z", None)
+        if dim_z is not None:
+            dim_z = int(dim_z)
+        else:
+            dim_z = dim_h
+        self.dim_z = dim_z
         self.recycling_iters = cfg.otformer.recycling_iters
         self.detach_recycle = cfg.otformer.detach_recycle
         self.ablation_enable = bool(getattr(cfg.otformer.ablation, "enable", False))
@@ -92,7 +98,7 @@ class OTFormerModel(torch.nn.Module):
         self.motif_to_node = nn.Linear(dim_h, dim_h)
         self.path_to_node = nn.Linear(dim_h, dim_h)
         self.edge_proj = nn.Linear(dim_h, dim_h)
-        self.pair_init_proj = nn.Linear(dim_h + 1, dim_h)
+        self.pair_init_proj = nn.Linear(dim_h + 1, dim_z)
         self.use_spd = bool(getattr(cfg.otformer.pair, "use_spd", True))
         self.spd_max_dist = max(1, int(getattr(cfg.otformer.pair, "spd_max_dist", 16)))
         self.use_rrwp = bool(getattr(cfg.otformer.pair, "use_rrwp", False))
@@ -106,6 +112,7 @@ class OTFormerModel(torch.nn.Module):
             [
                 OTFormerBlock(
                     dim_h=dim_h,
+                    dim_z=dim_z,
                     num_heads=cfg.otformer.num_heads,
                     dropout=cfg.otformer.dropout,
                     attn_dropout=cfg.otformer.attn_dropout,
@@ -120,7 +127,7 @@ class OTFormerModel(torch.nn.Module):
             ]
         )
         self.h_recycle_norm = nn.LayerNorm(dim_h)
-        self.z_recycle_norm = nn.LayerNorm(dim_h)
+        self.z_recycle_norm = nn.LayerNorm(dim_z)
 
         atom_classes = getattr(cfg.dataset, "node_encoder_num_types", 64)
         self.mask_token = nn.Parameter(torch.zeros(dim_h))
@@ -134,13 +141,13 @@ class OTFormerModel(torch.nn.Module):
             )
             self.edge_mask_token = nn.Parameter(torch.zeros(dim_h))
             nn.init.normal_(self.edge_mask_token, std=0.02)
-            self.edge_decoder = nn.Linear(dim_h, edge_type_classes)
+            self.edge_decoder = nn.Linear(dim_z, edge_type_classes)
         elif denoise_mode == "edge_type":
             n_edge_types = max(getattr(cfg.dataset, "edge_encoder_num_types", 4), 1)
             self.edge_type_noedge_id = n_edge_types
-            self.edge_decoder = nn.Linear(dim_h, n_edge_types + 1)
+            self.edge_decoder = nn.Linear(dim_z, n_edge_types + 1)
         else:
-            self.edge_decoder = nn.Linear(dim_h, 1)
+            self.edge_decoder = nn.Linear(dim_z, 1)
 
         self.ce_loss = nn.CrossEntropyLoss()
         self.bce_loss = nn.BCEWithLogitsLoss()
@@ -805,7 +812,7 @@ class OTFormerModel(torch.nn.Module):
             )
             mask_union = atom_mask | motif_block_mask
             h_input = h_encoded.clone()
-            h_input[mask_union] = self.mask_token
+            h_input[mask_union] = self.mask_token.to(h_input.dtype)
         elif pretrain_on and self.disable_rum_ot:
             atom_mask = (
                 torch.rand(h_encoded.shape[0], device=h_encoded.device)
@@ -813,7 +820,7 @@ class OTFormerModel(torch.nn.Module):
             )
             mask_union = atom_mask
             h_input = h_encoded.clone()
-            h_input[mask_union] = self.mask_token
+            h_input[mask_union] = self.mask_token.to(h_input.dtype)
 
         if self.disable_rum_ot:
             h0 = h_input
@@ -821,7 +828,7 @@ class OTFormerModel(torch.nn.Module):
             path_mean = path_repr.mean(dim=1)
             if pretrain_on:
                 path_mean = path_mean.clone()
-                path_mean[mask_union] = self.mask_token
+                path_mean[mask_union] = self.mask_token.to(path_mean.dtype)
                 path_mean = path_mean.detach()
 
             h0 = h_input + self.motif_to_node(node_motif) + self.path_to_node(path_mean)

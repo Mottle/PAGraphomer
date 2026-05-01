@@ -70,7 +70,7 @@ def _load_latest_epoch_weights(model):
 
 
 def _train_epoch_pretrain(
-    logger, loader, model, optimizer, scheduler, batch_accumulation
+    logger, loader, model, optimizer, scheduler, batch_accumulation, scaler=None
 ):
     model.train()
     optimizer.zero_grad()
@@ -78,22 +78,33 @@ def _train_epoch_pretrain(
     for step, batch in enumerate(loader):
         batch.split = "train"
         batch.to(torch.device(cfg.accelerator))
-        pred, true = model(batch)
-        if not hasattr(batch, "otformer_aux") or "losses" not in batch.otformer_aux:
-            raise RuntimeError(
-                "OTFormer pretraining requires `batch.otformer_aux['losses']`. "
-                "Set `otformer.pretrain.enable=True` and use OTFormerModel."
-            )
-        losses = batch.otformer_aux["losses"]
-        loss = _joint_pretrain_loss(losses)
-        loss.backward()
+        with torch.amp.autocast("cuda"):
+            pred, true = model(batch)
+            if not hasattr(batch, "otformer_aux") or "losses" not in batch.otformer_aux:
+                raise RuntimeError(
+                    "OTFormer pretraining requires `batch.otformer_aux['losses']`. "
+                    "Set `otformer.pretrain.enable=True` and use OTFormerModel."
+                )
+            losses = batch.otformer_aux["losses"]
+            loss = _joint_pretrain_loss(losses)
+
+        if scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
 
         if ((step + 1) % batch_accumulation == 0) or (step + 1 == len(loader)):
             if cfg.optim.clip_grad_norm:
+                if scaler is not None:
+                    scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(
                     model.parameters(), cfg.optim.clip_grad_norm_value
                 )
-            optimizer.step()
+            if scaler is not None:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
             optimizer.zero_grad()
 
         # For pretraining, drive logger metrics from pretraining objective
@@ -123,7 +134,8 @@ def _eval_epoch_pretrain(logger, loader, model, split="val"):
     for batch in loader:
         batch.split = split
         batch.to(torch.device(cfg.accelerator))
-        pred, true = model(batch)
+        with torch.amp.autocast("cuda"):
+            pred, true = model(batch)
         if hasattr(batch, "otformer_aux") and "losses" in batch.otformer_aux:
             losses = batch.otformer_aux["losses"]
             loss = _joint_pretrain_loss(losses)
@@ -167,6 +179,7 @@ def otformer_pretrain_train(loggers, loaders, model, optimizer, scheduler):
     split_names = ["val", "test"]
     perf = [[] for _ in range(num_splits)]
     epoch_times = []
+    scaler = torch.amp.GradScaler("cuda") if torch.cuda.is_available() else None
 
     for cur_epoch in range(start_epoch, cfg.optim.max_epoch):
         t0 = time.perf_counter()
@@ -177,6 +190,7 @@ def otformer_pretrain_train(loggers, loaders, model, optimizer, scheduler):
             optimizer,
             scheduler,
             cfg.optim.batch_accumulation,
+            scaler=scaler,
         )
         perf[0].append(loggers[0].write_epoch(cur_epoch))
 

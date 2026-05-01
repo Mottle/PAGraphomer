@@ -105,6 +105,7 @@ class OTFormerBlock(nn.Module):
         self,
         dim_h,
         num_heads,
+        dim_z=None,
         dropout=0.0,
         attn_dropout=0.0,
         layer_norm=True,
@@ -119,8 +120,11 @@ class OTFormerBlock(nn.Module):
             raise ValueError(
                 f"dim_h ({dim_h}) must be divisible by num_heads ({num_heads})."
             )
+        if dim_z is None:
+            dim_z = dim_h
 
         self.dim_h = dim_h
+        self.dim_z = dim_z
         self.num_heads = num_heads
         self.head_dim = dim_h // num_heads
         self.scale = 1.0 / math.sqrt(self.head_dim)
@@ -132,7 +136,7 @@ class OTFormerBlock(nn.Module):
         self.k_proj = nn.Linear(dim_h, dim_h)
         self.v_proj = nn.Linear(dim_h, dim_h)
         self.attn_out = nn.Linear(dim_h, dim_h)
-        self.pair_bias = nn.Linear(dim_h, num_heads)
+        self.pair_bias = nn.Linear(dim_z, num_heads)
         if self.use_rrwp:
             if rrwp_dim <= 0:
                 raise ValueError(
@@ -144,13 +148,13 @@ class OTFormerBlock(nn.Module):
 
         self.node_to_pair_u = nn.Linear(dim_h, dim_h)
         self.node_to_pair_v = nn.Linear(dim_h, dim_h)
-        self.node_to_pair_out = nn.Linear(dim_h, dim_h)
+        self.node_to_pair_out = nn.Linear(dim_h, dim_z)
 
         if use_triangle:
-            self.tri_l = nn.Linear(dim_h, triangle_hidden)
-            self.tri_r = nn.Linear(dim_h, triangle_hidden)
-            self.tri_out = nn.Linear(triangle_hidden, dim_h)
-            self.tri_gate = nn.Linear(dim_h, dim_h)
+            self.tri_l = nn.Linear(dim_z, triangle_hidden)
+            self.tri_r = nn.Linear(dim_z, triangle_hidden)
+            self.tri_out = nn.Linear(triangle_hidden, dim_z)
+            self.tri_gate = nn.Linear(dim_z, dim_z)
 
         act_fn = register.act_dict[ffn_activation]
         self.ffn = nn.Sequential(
@@ -163,8 +167,8 @@ class OTFormerBlock(nn.Module):
         if layer_norm:
             self.norm_h1 = nn.LayerNorm(dim_h)
             self.norm_h2 = nn.LayerNorm(dim_h)
-            self.norm_z1 = nn.LayerNorm(dim_h)
-            self.norm_z2 = nn.LayerNorm(dim_h)
+            self.norm_z1 = nn.LayerNorm(dim_z)
+            self.norm_z2 = nn.LayerNorm(dim_z)
         else:
             self.norm_h1 = nn.Identity()
             self.norm_h2 = nn.Identity()

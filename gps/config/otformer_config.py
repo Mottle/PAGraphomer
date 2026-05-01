@@ -15,6 +15,7 @@ def set_cfg_otformer(cfg):
     cfg.otformer.ffn_activation = "gelu"
     cfg.otformer.recycling_iters = 2
     cfg.otformer.detach_recycle = True
+    cfg.otformer.dim_z = 0  # Pair track dim; 0 means same as dim_h
 
     cfg.otformer.rum = CN()
     cfg.otformer.rum.depth = 2

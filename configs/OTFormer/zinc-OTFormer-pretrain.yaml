@@ -40,7 +40,7 @@ posenc_RRWP:
 train:
   # Custom pretraining loop registered in gps/train/otformer_pretrain.py
   mode: otformer_pretrain
-  batch_size: 64
+  batch_size: 48
   eval_period: 1
 model:
   # OTFormer network registered in gps/network/otformer_model.py
@@ -52,6 +52,7 @@ otformer:
   # Dual-track OTFormer backbone.
   layers: 6
   num_heads: 4
+  dim_z: 128  # Pair track dimension (decoupled from node dim)
   dropout: 0.15
   attn_dropout: 0.2
   layer_norm: True
@@ -128,7 +129,7 @@ gnn:
   head: san_graph
   layers_pre_mp: 0
   layers_post_mp: 3
-  dim_inner: 64
+  dim_inner: 256
   batchnorm: True
   act: gelu
   dropout: 0.1
@@ -137,6 +138,7 @@ gnn:
 optim:
   # Optimizer and LR schedule.
   clip_grad_norm: True
+  batch_accumulation: 3
   optimizer: muon_adamw
   weight_decay: 0.05
   base_lr: 0.0005
