@@ -29,6 +29,11 @@ def train_epoch(logger, loader, model, optimizer, scheduler, batch_accumulation)
             loss, pred_score = compute_loss(pred, true)
             _true = true.detach().to("cpu", non_blocking=True)
             _pred = pred_score.detach().to("cpu", non_blocking=True)
+        # Merge auxiliary pretraining losses (e.g., motif contrastive)
+        if hasattr(batch, "mani_aux_losses") and batch.mani_aux_losses:
+            for aux_name, aux_loss in batch.mani_aux_losses.items():
+                if isinstance(aux_loss, torch.Tensor):
+                    loss = loss + aux_loss
         if hasattr(model, "_consistency_loss") and model._consistency_loss > 0:
             loss = loss + model._consistency_loss
         loss.backward()

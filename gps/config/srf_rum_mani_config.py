@@ -28,6 +28,18 @@ def srf_rum_mani_cfg(cfg):
     cfg.srf_rum_mani.pretrain.enable = False
     cfg.srf_rum_mani.pretrain.mask_ratio = 0.15
 
+    # Motif contrastive learning (prototype dispersion)
+    cfg.srf_rum_mani.pretrain.motif_contrastive = CN()
+    cfg.srf_rum_mani.pretrain.motif_contrastive.enable = True
+    cfg.srf_rum_mani.pretrain.motif_contrastive.weight = 0.5
+    cfg.srf_rum_mani.pretrain.motif_contrastive.temperature = 0.5
+
+    # Multi-view dropout contrastive (node consistency)
+    cfg.srf_rum_mani.pretrain.view_dropout = CN()
+    cfg.srf_rum_mani.pretrain.view_dropout.enable = True
+    cfg.srf_rum_mani.pretrain.view_dropout.weight = 0.3
+    cfg.srf_rum_mani.pretrain.view_dropout.ratio = 0.3
+
     # SRF sub-config (forwarded to ScaledRangeFormerAttention)
     cfg.srf_rum_mani.srf = CN()
     cfg.srf_rum_mani.srf.formulation = "B"  # A | B | C | D
