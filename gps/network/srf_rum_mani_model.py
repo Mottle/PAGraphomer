@@ -187,8 +187,9 @@ class SRFxRUM_MANI_Model(nn.Module):
             h_graph = global_mean_pool(batch.x, batch.batch)
             mp_pred = self.mol_property_decoder(h_graph)
             mp_target = batch.mol_property
-            if mp_target.dim() == 1:
-                mp_target = mp_target.unsqueeze(-1)
+            # PyG collates graph-level [21] tensors into 1D [num_graphs*21].
+            num_graphs = int(batch.batch.max().item()) + 1
+            mp_target = mp_target.view(num_graphs, -1)
             mp_weight = float(getattr(mp_cfg, "weight", 0.5))
             losses["mol_property"] = mp_weight * F.mse_loss(mp_pred, mp_target)
 
