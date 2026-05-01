@@ -37,6 +37,7 @@ from gps.transform.transforms import (
     concat_x_and_pos,
     clip_graphs_to_size,
 )
+from gps.loader.rdkit_features import RDKitFeatureComputer
 
 
 def log_loaded_dataset(dataset, format, name):
@@ -197,6 +198,34 @@ def load_dataset_master(format, name, dataset_dir):
         raise ValueError(f"Unknown data format: {format}")
 
     pre_transform_in_memory(dataset, partial(task_specific_preprocessing, cfg=cfg))
+
+    # Precompute RDKit features for ZINC if MANI pretraining is enabled
+    if (format == "PyG" and name.startswith("ZINC")) or (format == "PyG-ZINC"):
+        mani_pretrain = getattr(getattr(cfg, "srf_rum_mani", None), "pretrain", None)
+        if mani_pretrain is not None and getattr(mani_pretrain, "enable", False):
+            phase2_enabled = (
+                getattr(mani_pretrain, "atom_context", None) is not None
+                and mani_pretrain.atom_context.get("enable", False)
+            ) or (
+                getattr(mani_pretrain, "mol_property", None) is not None
+                and mani_pretrain.mol_property.get("enable", False)
+            )
+            if phase2_enabled:
+                logging.info(
+                    "Precomputing RDKit atom context and molecular properties for ZINC..."
+                )
+                computer = RDKitFeatureComputer()
+
+                def add_rdkit_features(data):
+                    atom_ctx, mol_props = computer.compute_for_data(data)
+                    if atom_ctx is not None:
+                        data.atom_context = torch.from_numpy(atom_ctx)
+                    if mol_props is not None:
+                        data.mol_property = torch.from_numpy(mol_props)
+                    return data
+
+                pre_transform_in_memory(dataset, add_rdkit_features, show_progress=True)
+                logging.info("Done computing RDKit features.")
 
     log_loaded_dataset(dataset, format, name)
 

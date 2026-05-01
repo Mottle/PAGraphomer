@@ -76,6 +76,8 @@ class SRFxRUM_MANI_Model(nn.Module):
         # ------------------------------------------------------------------
         self.mask_token = None
         self.mask_decoder = None
+        self.atom_context_decoder = None
+        self.mol_property_decoder = None
         self.pretrain_cfg = getattr(cfg.srf_rum_mani, "pretrain", None)
         if self.pretrain_cfg and getattr(self.pretrain_cfg, "enable", False):
             num_atom_types = int(getattr(cfg.dataset, "node_encoder_num_types", 0))
@@ -86,6 +88,23 @@ class SRFxRUM_MANI_Model(nn.Module):
                 )
             self.mask_token = nn.Parameter(torch.zeros(1, cfg.gnn.dim_inner))
             self.mask_decoder = nn.Linear(cfg.gnn.dim_inner, num_atom_types)
+
+            # Phase 2: atom context decoder (node-level)
+            ac_cfg = getattr(self.pretrain_cfg, "atom_context", None)
+            if ac_cfg and getattr(ac_cfg, "enable", False):
+                ac_dim = int(getattr(ac_cfg, "dim", 158))
+                self.atom_context_decoder = nn.Linear(cfg.gnn.dim_inner, ac_dim)
+
+            # Phase 2: molecular property decoder (graph-level)
+            mp_cfg = getattr(self.pretrain_cfg, "mol_property", None)
+            if mp_cfg and getattr(mp_cfg, "enable", False):
+                mp_num = int(getattr(mp_cfg, "num_props", 21))
+                self.mol_property_decoder = nn.Sequential(
+                    nn.Linear(cfg.gnn.dim_inner, cfg.gnn.dim_inner),
+                    nn.ReLU(),
+                    nn.Dropout(float(getattr(mani_cfg, "dropout", cfg.gt.dropout))),
+                    nn.Linear(cfg.gnn.dim_inner, mp_num),
+                )
 
     @staticmethod
     def _sample_pretrain_mask(num_nodes, device, ratio=0.15):
@@ -140,6 +159,38 @@ class SRFxRUM_MANI_Model(nn.Module):
             losses["motif_contrastive"] = weight * self._motif_contrastive_loss(
                 all_motif_scores, batch.x, temperature=temp
             )
+
+        # Phase 2: atom context prediction
+        ac_cfg = getattr(self.pretrain_cfg, "atom_context", None)
+        if (
+            ac_cfg
+            and getattr(ac_cfg, "enable", False)
+            and hasattr(batch, "atom_context")
+        ):
+            ac_pred = self.atom_context_decoder(batch.x)
+            ac_target = batch.atom_context
+            if ac_target.dim() == 1:
+                ac_target = ac_target.unsqueeze(-1)
+            ac_weight = float(getattr(ac_cfg, "weight", 1.0))
+            losses["atom_context"] = ac_weight * F.mse_loss(ac_pred, ac_target)
+
+        # Phase 2: molecular property prediction
+        mp_cfg = getattr(self.pretrain_cfg, "mol_property", None)
+        if (
+            mp_cfg
+            and getattr(mp_cfg, "enable", False)
+            and hasattr(batch, "mol_property")
+        ):
+            # Graph-level pooling
+            from torch_geometric.nn import global_mean_pool
+
+            h_graph = global_mean_pool(batch.x, batch.batch)
+            mp_pred = self.mol_property_decoder(h_graph)
+            mp_target = batch.mol_property
+            if mp_target.dim() == 1:
+                mp_target = mp_target.unsqueeze(-1)
+            mp_weight = float(getattr(mp_cfg, "weight", 0.5))
+            losses["mol_property"] = mp_weight * F.mse_loss(mp_pred, mp_target)
 
         return pred, true, losses, batch.x, all_motif_scores
 

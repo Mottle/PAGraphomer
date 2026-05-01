@@ -78,6 +78,22 @@ srf_rum_mani:
   pretrain:
     enable: True
     mask_ratio: 0.15
+    motif_contrastive:
+      enable: True
+      weight: 0.5
+      temperature: 0.5
+    view_dropout:
+      enable: True
+      weight: 0.3
+      ratio: 0.3
+    atom_context:
+      enable: True
+      weight: 1.0
+      dim: 158
+    mol_property:
+      enable: True
+      weight: 0.5
+      num_props: 21
   srf:
     formulation: "B"
     attn_dropout: 0.1

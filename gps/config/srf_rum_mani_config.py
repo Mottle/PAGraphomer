@@ -40,6 +40,18 @@ def srf_rum_mani_cfg(cfg):
     cfg.srf_rum_mani.pretrain.view_dropout.weight = 0.3
     cfg.srf_rum_mani.pretrain.view_dropout.ratio = 0.3
 
+    # Atom context prediction (Phase 2)
+    cfg.srf_rum_mani.pretrain.atom_context = CN()
+    cfg.srf_rum_mani.pretrain.atom_context.enable = True
+    cfg.srf_rum_mani.pretrain.atom_context.weight = 1.0
+    cfg.srf_rum_mani.pretrain.atom_context.dim = 158
+
+    # Molecular property prediction (Phase 2)
+    cfg.srf_rum_mani.pretrain.mol_property = CN()
+    cfg.srf_rum_mani.pretrain.mol_property.enable = True
+    cfg.srf_rum_mani.pretrain.mol_property.weight = 0.5
+    cfg.srf_rum_mani.pretrain.mol_property.num_props = 21
+
     # SRF sub-config (forwarded to ScaledRangeFormerAttention)
     cfg.srf_rum_mani.srf = CN()
     cfg.srf_rum_mani.srf.formulation = "B"  # A | B | C | D
