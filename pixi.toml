@@ -39,3 +39,4 @@ torch_spline_conv = { url = "https://data.pyg.org/whl/torch-2.8.0%2Bcu129/torch_
 
 ogb = { version = "*"}
 flash-linear-attention = { version = "*"}
+crem = { version = "*"}

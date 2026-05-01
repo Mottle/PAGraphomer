@@ -1,4 +1,6 @@
+import glob
 import logging
+import os
 import time
 
 import numpy as np
@@ -13,13 +15,55 @@ from gps.loss.subtoken_prediction_loss import subtoken_cross_entropy
 from gps.utils import cfg_to_dict, flatten_dict, make_wandb_name
 
 
+def clean_ckpt_keep_last_n(n=3):
+    """Remove old checkpoints, keeping only the last n."""
+    ckpt_dir = os.path.join(cfg.run_dir, "ckpt")
+    if not os.path.exists(ckpt_dir):
+        return
+    ckpt_files = sorted(glob.glob(os.path.join(ckpt_dir, "*.ckpt")))
+    if len(ckpt_files) > n:
+        for f in ckpt_files[:-n]:
+            os.remove(f)
+
+
 def train_epoch(logger, loader, model, optimizer, scheduler, batch_accumulation):
     model.train()
     optimizer.zero_grad()
     time_start = time.time()
+
+    # Look up perturbed data cache + subset index mapping
+    perturbed_cache = None
+    subset_indices = None
+    try:
+        import gps.loader.crem_perturbation as crem_mod
+
+        perturbed_cache = crem_mod.PERTURBED_CACHE
+        s = loader.dataset
+        if hasattr(s, "indices") and s.indices is not None:
+            subset_indices = s.indices
+    except Exception:
+        pass
+
     for iter, batch in enumerate(loader):
         batch.split = "train"
         batch.to(torch.device(cfg.accelerator))
+
+        # Inject perturbed Data for perturbation contrastive loss
+        if perturbed_cache is not None and subset_indices is not None:
+            perturb_list = []
+            for g in range(batch.num_graphs):
+                # Estimate dataset index: iter*batch_size + g
+                # This is approximate (works for sequential DataLoader without shuffle)
+                est_idx = iter * cfg.train.batch_size + g
+                if est_idx < len(subset_indices):
+                    orig_idx = subset_indices[est_idx]
+                    pdata = perturbed_cache.get(orig_idx)
+                    if pdata is not None:
+                        perturb_list.append(pdata)
+                        continue
+                perturb_list.append(None)
+            batch._perturb_data = perturb_list
+
         pred, true = model(batch)
         if cfg.dataset.name == "ogbg-code2":
             loss, pred_score = subtoken_cross_entropy(pred, true)
@@ -162,6 +206,7 @@ def custom_train(loggers, loaders, model, optimizer, scheduler):
             and is_ckpt_epoch(cur_epoch)
         ):
             save_ckpt(model, optimizer, scheduler, cur_epoch)
+            clean_ckpt_keep_last_n(3)
 
         if cfg.wandb.use:
             run.log(flatten_dict(perf), step=cur_epoch)

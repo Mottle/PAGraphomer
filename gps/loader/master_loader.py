@@ -38,6 +38,7 @@ from gps.transform.transforms import (
     clip_graphs_to_size,
 )
 from gps.loader.rdkit_features import RDKitFeatureComputer
+from gps.loader.crem_perturbation import CReMPerturbationGenerator
 
 
 def log_loaded_dataset(dataset, format, name):
@@ -199,6 +200,9 @@ def load_dataset_master(format, name, dataset_dir):
 
     pre_transform_in_memory(dataset, partial(task_specific_preprocessing, cfg=cfg))
 
+    # Phase 3 perturbation flag (initialized to False, set later)
+    _phase3_perturb_gen = False
+
     # Precompute RDKit features for ZINC if MANI pretraining is enabled
     if (format == "PyG" and name.startswith("ZINC")) or (format == "PyG-ZINC"):
         mani_pretrain = getattr(getattr(cfg, "srf_rum_mani", None), "pretrain", None)
@@ -210,22 +214,47 @@ def load_dataset_master(format, name, dataset_dir):
                 getattr(mani_pretrain, "mol_property", None) is not None
                 and mani_pretrain.mol_property.get("enable", False)
             )
-            if phase2_enabled:
+            phase3_enabled = (
+                getattr(mani_pretrain, "fingerprint_contrastive", None) is not None
+                and mani_pretrain.fingerprint_contrastive.get("enable", False)
+            ) or (
+                getattr(mani_pretrain, "scaffold_contrastive", None) is not None
+                and mani_pretrain.scaffold_contrastive.get("enable", False)
+            )
+            if phase2_enabled or phase3_enabled:
                 logging.info(
                     "Precomputing RDKit atom context and molecular properties for ZINC..."
                 )
                 computer = RDKitFeatureComputer()
 
                 def add_rdkit_features(data):
-                    atom_ctx, mol_props = computer.compute_for_data(data)
-                    if atom_ctx is not None:
-                        data.atom_context = torch.from_numpy(atom_ctx)
-                    if mol_props is not None:
-                        data.mol_property = torch.from_numpy(mol_props)
+                    if phase2_enabled:
+                        atom_ctx, mol_props = computer.compute_for_data(data)
+                        if atom_ctx is not None:
+                            data.atom_context = torch.from_numpy(atom_ctx)
+                        if mol_props is not None:
+                            data.mol_property = torch.from_numpy(mol_props)
+                    if phase3_enabled:
+                        mol_fp, scaff_fp = computer.compute_fingerprints(data)
+                        if mol_fp is not None:
+                            data.mol_fp = torch.from_numpy(mol_fp)
+                        if scaff_fp is not None:
+                            data.scaff_fp = torch.from_numpy(scaff_fp)
                     return data
 
                 pre_transform_in_memory(dataset, add_rdkit_features, show_progress=True)
                 logging.info("Done computing RDKit features.")
+
+            # CReM perturbation generation — done AFTER split for train-only
+            perturb_enabled = getattr(
+                mani_pretrain, "perturbation_contrastive", None
+            ) is not None and mani_pretrain.perturbation_contrastive.get(
+                "enable", False
+            )
+            if perturb_enabled:
+                _phase3_perturb_gen = True
+            else:
+                _phase3_perturb_gen = False
 
     log_loaded_dataset(dataset, format, name)
 
@@ -341,6 +370,59 @@ def load_dataset_master(format, name, dataset_dir):
 
     # Verify or generate dataset train/val/test splits
     prepare_splits(dataset)
+
+    # Generate CReM perturbations for training data only (Gap 1)
+    if _phase3_perturb_gen:
+        train_idx = dataset.data["train_graph_index"]
+        if not isinstance(train_idx, list):
+            train_idx = (
+                train_idx.tolist() if hasattr(train_idx, "tolist") else list(train_idx)
+            )
+        logging.info(
+            f"Generating CReM scaffold-invariant perturbations for "
+            f"{len(train_idx)} training graphs..."
+        )
+        db_path = cfg.srf_rum_mani.pretrain.perturbation_contrastive.get(
+            "crem_db", "datasets/chembl22_sa2.db"
+        )
+        perturb_gen = CReMPerturbationGenerator(
+            db_path=db_path,
+            num_candidates=1,
+            max_size=int(
+                cfg.srf_rum_mani.pretrain.perturbation_contrastive.get("max_size", 5)
+            ),
+            radius=int(
+                cfg.srf_rum_mani.pretrain.perturbation_contrastive.get("radius", 2)
+            ),
+        )
+
+        # Access via _data_list if available, otherwise build it
+        if hasattr(dataset, "_data_list") and dataset._data_list is not None:
+            data_list = dataset._data_list
+        else:
+            logging.info("  Building data_list from dataset...")
+            data_list = [dataset[i] for i in range(len(dataset))]
+            dataset._data_list = data_list
+
+        from tqdm import tqdm
+
+        perturbed_cache = {}
+        fail = 0
+        for orig_idx in tqdm(train_idx, desc="Perturbations"):
+            data = data_list[orig_idx]
+            pdata = perturb_gen.generate(data)
+            if pdata is not None:
+                perturbed_cache[orig_idx] = pdata
+            else:
+                fail += 1
+
+        import gps.loader.crem_perturbation as crem_mod
+
+        crem_mod.PERTURBED_CACHE = perturbed_cache
+        logging.info(
+            f"Done. Fail rate: {fail}/{len(train_idx)} "
+            f"({100*fail/len(train_idx):.1f}%)"
+        )
 
     # Precompute in-degree histogram if needed for PNAConv.
     if cfg.gt.layer_type.startswith("PNA") and len(cfg.gt.pna_degrees) == 0:

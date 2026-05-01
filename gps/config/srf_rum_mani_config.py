@@ -52,6 +52,32 @@ def srf_rum_mani_cfg(cfg):
     cfg.srf_rum_mani.pretrain.mol_property.weight = 0.5
     cfg.srf_rum_mani.pretrain.mol_property.num_props = 21
 
+    # Molecular fingerprint-guided contrastive learning (Phase 3)
+    cfg.srf_rum_mani.pretrain.fingerprint_contrastive = CN()
+    cfg.srf_rum_mani.pretrain.fingerprint_contrastive.enable = True
+    cfg.srf_rum_mani.pretrain.fingerprint_contrastive.weight = 1.0
+    cfg.srf_rum_mani.pretrain.fingerprint_contrastive.margin = 0.8
+    cfg.srf_rum_mani.pretrain.fingerprint_contrastive.adaptive_coeff = 1.0
+    cfg.srf_rum_mani.pretrain.fingerprint_contrastive.temperature = 0.1
+
+    # Scaffold-level contrastive learning (Phase 3)
+    cfg.srf_rum_mani.pretrain.scaffold_contrastive = CN()
+    cfg.srf_rum_mani.pretrain.scaffold_contrastive.enable = True
+    cfg.srf_rum_mani.pretrain.scaffold_contrastive.weight = 1.0
+    cfg.srf_rum_mani.pretrain.scaffold_contrastive.margin = 0.8
+    cfg.srf_rum_mani.pretrain.scaffold_contrastive.adaptive_coeff = 1.0
+    cfg.srf_rum_mani.pretrain.scaffold_contrastive.temperature = 0.1
+
+    # Scaffold-invariant perturbation contrastive learning (Gap 1)
+    cfg.srf_rum_mani.pretrain.perturbation_contrastive = CN()
+    cfg.srf_rum_mani.pretrain.perturbation_contrastive.enable = False
+    cfg.srf_rum_mani.pretrain.perturbation_contrastive.weight = 1.0
+    cfg.srf_rum_mani.pretrain.perturbation_contrastive.crem_db = (
+        "datasets/chembl22_sa2.db"
+    )
+    cfg.srf_rum_mani.pretrain.perturbation_contrastive.max_size = 5
+    cfg.srf_rum_mani.pretrain.perturbation_contrastive.radius = 2
+
     # SRF sub-config (forwarded to ScaledRangeFormerAttention)
     cfg.srf_rum_mani.srf = CN()
     cfg.srf_rum_mani.srf.formulation = "B"  # A | B | C | D

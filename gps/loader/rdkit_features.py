@@ -8,8 +8,9 @@ from typing import List, Optional
 
 import numpy as np
 import torch
-from rdkit import Chem
-from rdkit.Chem import Descriptors, GraphDescriptors
+from rdkit import Chem, DataStructs
+from rdkit.Chem import AllChem, Descriptors, GraphDescriptors
+from rdkit.Chem.Scaffolds import MurckoScaffold
 from rdkit.Chem.rdchem import HybridizationType
 
 # ---------------------------------------------------------------------------
@@ -309,5 +310,39 @@ class RDKitFeatureComputer:
             atom_ctx = mol_atom_context_features(mol)
             mol_props = mol_property_descriptors(mol)
             return atom_ctx, mol_props
+        except Exception:
+            return None, None
+
+    def compute_fingerprints(self, data, fp_dim: int = 512) -> tuple:
+        """Compute molecular and scaffold ECFP fingerprints.
+
+        Returns:
+            (mol_fp, scaff_fp) as numpy arrays of shape (fp_dim,)
+            or (None, None) if fails.
+        """
+        mol = graph_to_rdkit_mol(
+            data.x, data.edge_index, data.edge_attr, data.num_nodes
+        )
+        if mol is None:
+            return None, None
+
+        try:
+            mol_fp = AllChem.GetMorganFingerprintAsBitVect(
+                mol, radius=2, nBits=fp_dim
+            )
+            mol_fp_arr = np.zeros((fp_dim,), dtype=np.float32)
+            DataStructs.ConvertToNumpyArray(mol_fp, mol_fp_arr)
+
+            scaffold = MurckoScaffold.GetScaffoldForMol(mol)
+            if scaffold.GetNumAtoms() == 0:
+                scaff_fp_arr = np.zeros((fp_dim,), dtype=np.float32)
+            else:
+                scaff_fp = AllChem.GetMorganFingerprintAsBitVect(
+                    scaffold, radius=2, nBits=fp_dim
+                )
+                scaff_fp_arr = np.zeros((fp_dim,), dtype=np.float32)
+                DataStructs.ConvertToNumpyArray(scaff_fp, scaff_fp_arr)
+
+            return mol_fp_arr, scaff_fp_arr
         except Exception:
             return None, None
