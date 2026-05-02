@@ -229,7 +229,14 @@ if __name__ == "__main__":
         # Set machine learning pipeline
         loaders = create_loader()
         loggers = create_logger()
+        # GraphGym's create_model reduces dim_out=2 to 1 for classification
+        # (binary heuristic, breaks multi-task datasets like Clintox/MUV/SIDER/Tox21).
+        # Temporarily override task_type to bypass the heuristic.
+        saved_task = cfg.dataset.task_type
+        if saved_task == "classification" and cfg.share.dim_out > 1:
+            cfg.dataset.task_type = "classification_multitask"
         model = create_model()
+        cfg.dataset.task_type = saved_task
         if cfg.pretrained.dir or cfg.pretrained.weights_path:
             model = init_model_from_pretrained(
                 model,

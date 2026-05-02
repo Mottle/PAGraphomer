@@ -12,13 +12,17 @@ class OTFormerFineTuneHead(nn.Module):
         super().__init__()
         dim_h = dim_in
         self.motif_size = cfg.otformer.motif.memory_size
+        dim_z = dim_h
+        cfg_dim_z = getattr(cfg.otformer, "dim_z", None)
+        if cfg_dim_z is not None and int(cfg_dim_z) > 0:
+            dim_z = int(cfg_dim_z)
         readout_dim = cfg.otformer.finetune.readout_dim
         self.readout_variant = getattr(cfg.otformer.ablation, "readout_variant", "full")
 
         if self.readout_variant == "full":
-            fusion_dim = (3 * dim_h) + self.motif_size
+            fusion_dim = (2 * dim_h) + dim_z + self.motif_size
         elif self.readout_variant == "nohisto":
-            fusion_dim = 3 * dim_h
+            fusion_dim = (2 * dim_h) + dim_z
         elif self.readout_variant == "node_only":
             fusion_dim = 2 * dim_h
         else:

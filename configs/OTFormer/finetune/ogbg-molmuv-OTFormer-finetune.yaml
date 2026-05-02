@@ -1,6 +1,5 @@
-# OTFormer finetuning on ogbg-molmuv (extreme imbalanced multilabel classification).
-out_dir: results
-metric_best: ap
+out_dir: results/finetune
+metric_best: auc
 metric_agg: argmax
 wandb:
   use: False
@@ -8,35 +7,30 @@ dataset:
   format: OGB
   name: ogbg-molmuv
   task: graph
-  task_type: classification_multilabel
+  task_type: classification
   transductive: False
-  molecule_loader: motil_csv
-  split_mode: motil_scafford_balance
-  split: [0.8, 0.1, 0.1]
+  split_mode: standard
   node_encoder: True
   node_encoder_name: Atom
-  node_encoder_num_types: 28
   node_encoder_bn: False
   edge_encoder: True
   edge_encoder_name: Bond
-  edge_encoder_num_types: 4
   edge_encoder_bn: False
 train:
   mode: otformer_finetune
-  batch_size: 32
+  batch_size: 24
   eval_period: 1
-  ckpt_period: 10
   enable_ckpt: True
   ckpt_best: True
   auto_resume: False
 model:
   type: OTFormerModel
-  loss_fun: asymmetric_loss
-  edge_decoding: dot
-  graph_pooling: mean
+  loss_fun: bce_with_logits_finetune
+  graph_pooling: add
 otformer:
   layers: 6
   num_heads: 4
+  dim_z: 128
   dropout: 0.15
   attn_dropout: 0.2
   layer_norm: True
@@ -49,12 +43,14 @@ otformer:
     rw_length: 8
     dropout: 0.0
     binary: False
-    output_softmax: False  # Disable softmax for OTFormer path features
+    output_softmax: False
   motif:
     memory_size: 64
-    sinkhorn_eps: 0.1
-    sinkhorn_iters: 5
+    sinkhorn_eps: 0.2
+    sinkhorn_iters: 30
     log_domain: True
+    motif_injection_mode: gate
+    path_agg_mode: transport_weighted
   pair:
     use_triangle: True
     triangle_hidden: 32
@@ -65,7 +61,7 @@ otformer:
   finetune:
     enable: True
     freeze_backbone: True
-    freeze_backbone_epochs: 10
+    freeze_backbone_epochs: 20
     backbone_lr_ratio: 0.1
     train_encoder_when_freeze_backbone: True
     encoder_lr_ratio: 1.0
@@ -73,8 +69,12 @@ otformer:
     cls_hidden: 128
     reg_hidden: 128
     asl_gamma_pos: 1.0
-    asl_gamma_neg: 5.0
+    asl_gamma_neg: 4.0
     asl_clip: 0.05
+  ablation:
+    enable: False
+    disable_rum_ot: False
+    readout_variant: full
 gt:
   pna_degrees: []
   bigbird:
@@ -83,10 +83,10 @@ gnn:
   head: otformer_finetune
   layers_pre_mp: 0
   layers_post_mp: 3
-  dim_inner: 64
+  dim_inner: 256
   batchnorm: True
   act: gelu
-  dropout: 0.1
+  dropout: 0.5
   agg: mean
   normalize_adj: False
 pretrained:
@@ -100,6 +100,6 @@ optim:
   optimizer: adamW
   weight_decay: 0.05
   base_lr: 0.0001
-  max_epoch: 100
+  max_epoch: 200
   scheduler: cosine_with_warmup
-  num_warmup_epochs: 5
+  num_warmup_epochs: 15

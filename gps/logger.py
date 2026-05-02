@@ -69,8 +69,19 @@ class CustomLogger(Logger):
 
     # task properties
     def classification_binary(self):
-        true = torch.cat(self._true).squeeze(-1).long()
+        true = torch.cat(self._true)
         pred_score = torch.cat(self._pred)
+
+        if true.dim() > 1 and true.size(-1) > 1:
+            auroc_score = auroc(
+                pred_score.to(torch.device(cfg.accelerator)),
+                true.long().to(torch.device(cfg.accelerator)),
+                task="multilabel",
+                num_labels=true.size(-1),
+            )
+            return {"auc": round(float(auroc_score), cfg.round)}
+
+        true = true.squeeze(-1).long()
         pred_int = self._get_pred_int(pred_score)
 
         if (

@@ -73,7 +73,7 @@ class OTFormerModel(torch.nn.Module):
         dim_z = getattr(cfg.otformer, "dim_z", None)
         if dim_z is not None:
             dim_z = int(dim_z)
-        else:
+        if dim_z is None or dim_z <= 0:
             dim_z = dim_h
         self.dim_z = dim_z
         self.recycling_iters = cfg.otformer.recycling_iters

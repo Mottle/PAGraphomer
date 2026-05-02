@@ -40,6 +40,8 @@ def bce_with_logits_finetune(pred, true):
     if not is_labeled.any():
         return torch.tensor(0.0, device=pred.device, requires_grad=True), pred
 
+    if pred.dim() < is_labeled.dim():
+        pred = pred.unsqueeze(-1).expand_as(true)
     pred_labeled = pred[is_labeled]
     true_labeled = true[is_labeled].float()
 

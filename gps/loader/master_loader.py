@@ -71,6 +71,7 @@ def log_loaded_dataset(dataset, format, name):
     logging.info(f"  num edge features: {dataset.num_edge_features}")
     if hasattr(dataset, "num_tasks"):
         logging.info(f"  num tasks: {dataset.num_tasks}")
+        cfg.share.dim_out = dataset.num_tasks
 
     if hasattr(dataset.data, "y") and dataset.data.y is not None:
         if isinstance(dataset.data.y, list):
