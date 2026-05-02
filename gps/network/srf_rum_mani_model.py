@@ -131,7 +131,7 @@ class SRFxRUM_MANI_Model(nn.Module):
         motif_score = motif_scores[-1]  # [N, K]
         K = motif_score.size(1)
         proto_repr = torch.mm(motif_score.t(), node_repr) / (
-            motif_score.sum(dim=0, keepdim=True).t() + 1e-8
+            motif_score.sum(dim=0, keepdim=True).t().clamp(min=1e-6)
         )  # [K, D]
         proto_sim = torch.mm(proto_repr, proto_repr.t()) / temperature  # [K, K]
         identity = torch.eye(K, device=proto_sim.device)
@@ -362,23 +362,14 @@ class SRFxRUM_MANI_Model(nn.Module):
 
             pdata_list = batch._perturb_data  # list of Data or None
             perturb_graphs = []
-            valid = []
+            valid_indices = []
 
-            for pdata in pdata_list:
+            for i, pdata in enumerate(pdata_list):
                 if pdata is not None:
                     perturb_graphs.append(pdata)
-                    valid.append(True)
-                else:
-                    perturb_graphs.append(
-                        type(batch)(
-                            x=torch.zeros(1, 1, dtype=torch.long),
-                            edge_index=torch.zeros(2, 0, dtype=torch.long),
-                        )
-                    )
-                    valid.append(False)
+                    valid_indices.append(i)
 
-            valid_mask = torch.tensor(valid, device=batch.x.device, dtype=torch.bool)
-            if valid_mask.any():
+            if perturb_graphs:
                 perturb_batch = PyGBatch.from_data_list(perturb_graphs).to(
                     batch.x.device
                 )
@@ -386,8 +377,11 @@ class SRFxRUM_MANI_Model(nn.Module):
                 h_perturb = global_mean_pool(perturb_enc.x, perturb_batch.batch)
                 h_orig = global_mean_pool(h_out1, batch.batch)
 
+                valid_mask = torch.tensor(
+                    valid_indices, device=batch.x.device, dtype=torch.long
+                )
                 h_o = F.normalize(h_orig[valid_mask], dim=-1)
-                h_p = F.normalize(h_perturb[valid_mask], dim=-1)
+                h_p = F.normalize(h_perturb, dim=-1)
                 cos = (h_o * h_p).sum(dim=-1)
                 losses["perturbation_contrastive"] = perturb_weight * (1.0 - cos.mean())
 
@@ -404,9 +398,15 @@ class SRFxRUM_MANI_Model(nn.Module):
                 edge_attr=batch.edge_attr,
                 batch=batch.batch,
             )
-            for k, v in batch:
+            for k in batch.keys:
                 if k not in ("x", "edge_index", "edge_attr", "batch"):
-                    setattr(batch_v2, k, v.clone() if hasattr(v, "clone") else v)
+                    v = getattr(batch, k, None)
+                    if v is not None:
+                        setattr(
+                            batch_v2,
+                            k,
+                            v.clone() if hasattr(v, "clone") else v,
+                        )
 
             if hasattr(batch_v2, "pair_attr") and batch_v2.pair_attr is not None:
                 num_pairs = batch_v2.pair_attr.size(0)

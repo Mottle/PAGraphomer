@@ -39,6 +39,20 @@ from gps.transform.transforms import (
 )
 from gps.loader.rdkit_features import RDKitFeatureComputer
 from gps.loader.crem_perturbation import CReMPerturbationGenerator
+from gps.loader.dataset.zinc_lazy import ZINCLazyDataset
+
+
+def _generate_perturbation_for_idx(args):
+    """Worker function for parallel CReM perturbation generation."""
+    idx, data, db_path, max_size, radius = args
+    perturb_gen = CReMPerturbationGenerator(
+        db_path=db_path,
+        num_candidates=1,
+        max_size=max_size,
+        radius=radius,
+    )
+    pdata = perturb_gen.generate(data)
+    return idx, pdata
 
 
 def log_loaded_dataset(dataset, format, name):
@@ -202,6 +216,90 @@ def load_dataset_master(format, name, dataset_dir):
 
     # Phase 3 perturbation flag (initialized to False, set later)
     _phase3_perturb_gen = False
+
+    # Skip heavy preprocessing for ZINCLazyDataset — everything is in process()
+    if isinstance(dataset, ZINCLazyDataset):
+        log_loaded_dataset(dataset, format, name)
+
+        num_graphs = len(dataset)
+        all_indices = torch.arange(num_graphs, dtype=torch.long)
+        dataset.data["train_graph_index"] = all_indices
+        dataset.data["val_graph_index"] = torch.tensor([], dtype=torch.long)
+        dataset.data["test_graph_index"] = torch.tensor([], dtype=torch.long)
+        from torch_geometric.graphgym.config import cfg as _cfg
+
+        _cfg.cfg.share.num_splits = 1
+        logging.info(
+            f"Pretraining mode (lazy): using all {num_graphs} graphs as training data."
+        )
+
+        # CReM generation for on-disk dataset: iterate through train graphs
+        perturb_enabled = getattr(
+            getattr(getattr(cfg, "srf_rum_mani", None), "pretrain", None),
+            "perturbation_contrastive",
+            None,
+        ) is not None and getattr(
+            getattr(cfg, "srf_rum_mani", None), "pretrain", None
+        ).perturbation_contrastive.get(
+            "enable", False
+        )
+        if perturb_enabled:
+            _phase3_perturb_gen = True
+            from tqdm import tqdm
+
+            crem_cfg = getattr(
+                getattr(cfg, "srf_rum_mani", None), "pretrain", None
+            ).perturbation_contrastive
+            db_path = crem_cfg.get("crem_db", "datasets/chembl22_sa2.db")
+            max_size = int(crem_cfg.get("max_size", 5))
+            radius = int(crem_cfg.get("radius", 2))
+
+            import gps.loader.crem_perturbation as crem_mod
+
+            perturbed_cache = crem_mod.load_perturbed_cache(
+                dataset_name=cfg.dataset.name,
+                num_train=num_graphs,
+                db_path=db_path,
+                max_size=max_size,
+                radius=radius,
+            )
+            if perturbed_cache is not None:
+                crem_mod.PERTURBED_CACHE = perturbed_cache
+                logging.info(
+                    f"Using cached CReM perturbations ({len(perturbed_cache)} entries)."
+                )
+            else:
+                logging.info(
+                    f"Generating CReM perturbations for {num_graphs} graphs..."
+                )
+                perturb_gen = CReMPerturbationGenerator(
+                    db_path=db_path, num_candidates=1, max_size=max_size, radius=radius
+                )
+                perturbed_cache = {}
+                fail = 0
+                for idx in tqdm(range(num_graphs), desc="Perturbations"):
+                    data = dataset.get(idx)
+                    pdata = perturb_gen.generate(data)
+                    if pdata is not None:
+                        perturbed_cache[idx] = pdata
+                    else:
+                        fail += 1
+                    del data
+                crem_mod.PERTURBED_CACHE = perturbed_cache
+                logging.info(
+                    f"Done. Fail rate: {fail}/{num_graphs} "
+                    f"({100*fail/num_graphs:.1f}%)"
+                )
+                crem_mod.save_perturbed_cache(
+                    cache=perturbed_cache,
+                    dataset_name=cfg.dataset.name,
+                    num_train=num_graphs,
+                    db_path=db_path,
+                    max_size=max_size,
+                    radius=radius,
+                )
+
+        return dataset
 
     # Precompute RDKit features for ZINC if MANI pretraining is enabled
     if (format == "PyG" and name.startswith("ZINC")) or (format == "PyG-ZINC"):
@@ -368,8 +466,22 @@ def load_dataset_master(format, name, dataset_dir):
         set_dataset_splits(dataset, dataset.split_idxs)
         delattr(dataset, "split_idxs")
 
-    # Verify or generate dataset train/val/test splits
-    prepare_splits(dataset)
+    # In pretraining mode: skip splits entirely, use ALL data as train
+    if _phase3_perturb_gen:
+        num_graphs = len(dataset)
+        all_indices = torch.arange(num_graphs, dtype=torch.long)
+        dataset.data["train_graph_index"] = all_indices
+        dataset.data["val_graph_index"] = torch.tensor([], dtype=torch.long)
+        dataset.data["test_graph_index"] = torch.tensor([], dtype=torch.long)
+        import torch_geometric.graphgym.config as _cfg
+
+        _cfg.cfg.share.num_splits = 1
+        logging.info(
+            f"Pretraining mode: using all {num_graphs} graphs as training data, "
+            f"no val/test split."
+        )
+    else:
+        prepare_splits(dataset)
 
     # Generate CReM perturbations for training data only (Gap 1)
     if _phase3_perturb_gen:
@@ -378,51 +490,108 @@ def load_dataset_master(format, name, dataset_dir):
             train_idx = (
                 train_idx.tolist() if hasattr(train_idx, "tolist") else list(train_idx)
             )
-        logging.info(
-            f"Generating CReM scaffold-invariant perturbations for "
-            f"{len(train_idx)} training graphs..."
-        )
         db_path = cfg.srf_rum_mani.pretrain.perturbation_contrastive.get(
             "crem_db", "datasets/chembl22_sa2.db"
         )
-        perturb_gen = CReMPerturbationGenerator(
-            db_path=db_path,
-            num_candidates=1,
-            max_size=int(
-                cfg.srf_rum_mani.pretrain.perturbation_contrastive.get("max_size", 5)
-            ),
-            radius=int(
-                cfg.srf_rum_mani.pretrain.perturbation_contrastive.get("radius", 2)
-            ),
+        max_size = int(
+            cfg.srf_rum_mani.pretrain.perturbation_contrastive.get("max_size", 5)
         )
-
-        # Access via _data_list if available, otherwise build it
-        if hasattr(dataset, "_data_list") and dataset._data_list is not None:
-            data_list = dataset._data_list
-        else:
-            logging.info("  Building data_list from dataset...")
-            data_list = [dataset[i] for i in range(len(dataset))]
-            dataset._data_list = data_list
-
-        from tqdm import tqdm
-
-        perturbed_cache = {}
-        fail = 0
-        for orig_idx in tqdm(train_idx, desc="Perturbations"):
-            data = data_list[orig_idx]
-            pdata = perturb_gen.generate(data)
-            if pdata is not None:
-                perturbed_cache[orig_idx] = pdata
-            else:
-                fail += 1
+        radius = int(
+            cfg.srf_rum_mani.pretrain.perturbation_contrastive.get("radius", 2)
+        )
 
         import gps.loader.crem_perturbation as crem_mod
 
-        crem_mod.PERTURBED_CACHE = perturbed_cache
-        logging.info(
-            f"Done. Fail rate: {fail}/{len(train_idx)} "
-            f"({100*fail/len(train_idx):.1f}%)"
+        # Try loading persistent cache first
+        perturbed_cache = crem_mod.load_perturbed_cache(
+            dataset_name=cfg.dataset.name,
+            num_train=len(train_idx),
+            db_path=db_path,
+            max_size=max_size,
+            radius=radius,
         )
+
+        if perturbed_cache is not None:
+            crem_mod.PERTURBED_CACHE = perturbed_cache
+            logging.info(
+                f"Using cached CReM perturbations ({len(perturbed_cache)} entries)."
+            )
+        else:
+            logging.info(
+                f"Generating CReM scaffold-invariant perturbations for "
+                f"{len(train_idx)} training graphs..."
+            )
+            perturb_gen = CReMPerturbationGenerator(
+                db_path=db_path,
+                num_candidates=1,
+                max_size=max_size,
+                radius=radius,
+            )
+
+            # Access via _data_list if available, otherwise build it
+            if hasattr(dataset, "_data_list") and dataset._data_list is not None:
+                data_list = dataset._data_list
+            else:
+                logging.info("  Building data_list from dataset...")
+                # Remove dataset-level attrs that break separate()
+                temp_attrs = {}
+                for attr in [
+                    "train_graph_index",
+                    "val_graph_index",
+                    "test_graph_index",
+                ]:
+                    if hasattr(dataset._data, attr):
+                        temp_attrs[attr] = getattr(dataset._data, attr)
+                        delattr(dataset._data, attr)
+                try:
+                    data_list = [dataset[i] for i in range(len(dataset))]
+                finally:
+                    for attr, val in temp_attrs.items():
+                        setattr(dataset._data, attr, val)
+                dataset._data_list = data_list
+
+            from tqdm import tqdm
+            from multiprocessing import Pool, cpu_count
+
+            # Determine number of parallel workers
+            n_workers = min(16, cpu_count())
+            logging.info(
+                f"  Using {n_workers} parallel workers for CReM perturbation generation..."
+            )
+
+            # Prepare arguments for parallel processing
+            worker_args = [
+                (idx, data_list[idx], db_path, max_size, radius) for idx in train_idx
+            ]
+
+            perturbed_cache = {}
+            fail = 0
+            with Pool(processes=n_workers) as pool:
+                for idx, pdata in tqdm(
+                    pool.imap(_generate_perturbation_for_idx, worker_args),
+                    total=len(train_idx),
+                    desc="Perturbations",
+                ):
+                    if pdata is not None:
+                        perturbed_cache[idx] = pdata
+                    else:
+                        fail += 1
+
+            crem_mod.PERTURBED_CACHE = perturbed_cache
+            logging.info(
+                f"Done. Fail rate: {fail}/{len(train_idx)} "
+                f"({100*fail/len(train_idx):.1f}%)"
+            )
+
+            # Persist to disk for future runs
+            crem_mod.save_perturbed_cache(
+                cache=perturbed_cache,
+                dataset_name=cfg.dataset.name,
+                num_train=len(train_idx),
+                db_path=db_path,
+                max_size=max_size,
+                radius=radius,
+            )
 
     # Precompute in-degree histogram if needed for PNAConv.
     if cfg.gt.layer_type.startswith("PNA") and len(cfg.gt.pna_degrees) == 0:
@@ -801,6 +970,14 @@ def preformat_ZINC(dataset_dir, name):
     """
     if name not in ["subset", "full"]:
         raise ValueError(f"Unexpected subset choice for ZINC dataset: {name}")
+
+    # For MANI pretraining with ZINC full: use on-disk lazy loading to avoid OOM
+    from torch_geometric.graphgym.config import cfg
+
+    mani_pt = getattr(getattr(cfg, "srf_rum_mani", None), "pretrain", None)
+    if mani_pt is not None and getattr(mani_pt, "enable", False) and name == "full":
+        return ZINCLazyDataset(root=dataset_dir, name=name)
+
     dataset = join_dataset_splits(
         [
             ZINC(root=dataset_dir, subset=(name == "subset"), split=split)
@@ -869,32 +1046,100 @@ def preformat_COCOSuperpixels(dataset_dir, name, slic_compactness):
     return dataset
 
 
+def _concat_in_memory_datasets(datasets):
+    """Efficiently concatenate InMemoryDatasets by merging internal storage."""
+    import copy
+    from torch_geometric.data import Data
+
+    # Start with a shallow copy of the first dataset's data structure
+    joint_data = copy.copy(datasets[0].data)
+    joint_slices = copy.copy(datasets[0].slices)
+
+    # Accumulated offsets for each attribute type
+    node_offset = datasets[0].data.x.size(0) if hasattr(datasets[0].data, "x") else 0
+    edge_offset = (
+        datasets[0].data.edge_index.size(1)
+        if hasattr(datasets[0].data, "edge_index")
+        else 0
+    )
+    graph_offset = len(datasets[0])
+
+    for ds in datasets[1:]:
+        # 1) Concatenate node-level features
+        if hasattr(joint_data, "x") and hasattr(ds.data, "x"):
+            joint_data.x = torch.cat([joint_data.x, ds.data.x], dim=0)
+            joint_slices["x"] = torch.cat(
+                [joint_slices["x"], ds.slices["x"][1:] + node_offset]
+            )
+            node_offset += ds.data.x.size(0)
+
+        # 2) Concatenate edge indices and edge attributes.
+        #    NOTE: PyG InMemoryDataset stores edge_index as LOCAL indices
+        #    (relative to each graph), so we do NOT add node_offset.
+        if hasattr(joint_data, "edge_index") and hasattr(ds.data, "edge_index"):
+            joint_data.edge_index = torch.cat(
+                [joint_data.edge_index, ds.data.edge_index], dim=1
+            )
+            joint_slices["edge_index"] = torch.cat(
+                [joint_slices["edge_index"], ds.slices["edge_index"][1:] + edge_offset]
+            )
+
+        if hasattr(joint_data, "edge_attr") and hasattr(ds.data, "edge_attr"):
+            joint_data.edge_attr = torch.cat(
+                [joint_data.edge_attr, ds.data.edge_attr], dim=0
+            )
+            joint_slices["edge_attr"] = torch.cat(
+                [
+                    joint_slices["edge_attr"],
+                    ds.slices["edge_attr"][1:] + edge_offset,
+                ]
+            )
+
+        # Update edge offset **after** both edge_index and edge_attr have used it
+        if hasattr(ds.data, "edge_index"):
+            edge_offset += ds.data.edge_index.size(1)
+
+        # 4) Concatenate graph-level labels
+        if hasattr(joint_data, "y") and hasattr(ds.data, "y"):
+            joint_data.y = torch.cat([joint_data.y, ds.data.y], dim=0)
+            joint_slices["y"] = torch.cat(
+                [joint_slices["y"], ds.slices["y"][1:] + graph_offset]
+            )
+            graph_offset += len(ds)
+
+    return joint_data, joint_slices
+
+
 def join_dataset_splits(datasets):
     """Join train, val, test datasets into one dataset object.
 
     Args:
-        datasets: list of 3 PyG datasets to merge
+        datasets: list of 1 (train only) or 3 (train, val, test) PyG datasets
 
     Returns:
         joint dataset with `split_idxs` property storing the split indices
     """
-    assert len(datasets) == 3, "Expecting train, val, test datasets"
+    if len(datasets) == 1:
+        # Train-only: no merge needed
+        n = len(datasets[0])
+        datasets[0]._data_list = None
+        datasets[0]._indices = None
+        datasets[0].split_idxs = [list(range(n))]
+        return datasets[0]
 
+    assert len(datasets) == 3, "Expecting 1 (train) or 3 (train, val, test) datasets"
     n1, n2, n3 = len(datasets[0]), len(datasets[1]), len(datasets[2])
-    data_list = (
-        [datasets[0].get(i) for i in range(n1)]
-        + [datasets[1].get(i) for i in range(n2)]
-        + [datasets[2].get(i) for i in range(n3)]
-    )
+    joint_data, joint_slices = _concat_in_memory_datasets(datasets)
 
+    datasets[0].data = joint_data
+    datasets[0].slices = joint_slices
+    datasets[0]._data_list = None
     datasets[0]._indices = None
-    datasets[0]._data_list = data_list
-    datasets[0].data, datasets[0].slices = datasets[0].collate(data_list)
+
     split_idxs = [
         list(range(n1)),
         list(range(n1, n1 + n2)),
         list(range(n1 + n2, n1 + n2 + n3)),
     ]
     datasets[0].split_idxs = split_idxs
-
     return datasets[0]

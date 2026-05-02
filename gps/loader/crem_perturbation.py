@@ -4,8 +4,10 @@ Generates perturbed versions of ZINC molecules that preserve the Murcko scaffold
 while replacing side chains using chemically reasonable mutations (CReM).
 """
 
+import hashlib
 import logging
-from typing import List, Optional, Tuple
+import os
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -15,7 +17,79 @@ from rdkit.Chem.Scaffolds import MurckoScaffold
 from torch_geometric.data import Data
 
 # Module-level cache for perturbed Data objects
-PERTURBED_CACHE = None  # List[Optional[Data]], one per dataset index
+PERTURBED_CACHE = None  # Dict[int, Optional[Data]], keyed by dataset index
+
+
+def _get_cache_path(
+    dataset_name: str,
+    num_train: int,
+    db_path: str,
+    max_size: int,
+    radius: int,
+    cache_dir: str = "datasets/crem_cache",
+) -> str:
+    """Build deterministic cache file path from parameters."""
+    db_name = os.path.basename(db_path)
+    params = f"{dataset_name}_{num_train}_{db_name}_{max_size}_{radius}"
+    h = hashlib.sha256(params.encode()).hexdigest()[:16]
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, f"crem_perturbations_{h}.pt")
+
+
+def load_perturbed_cache(
+    dataset_name: str,
+    num_train: int,
+    db_path: str,
+    max_size: int,
+    radius: int,
+    cache_dir: str = "datasets/crem_cache",
+) -> Optional[Dict[int, Optional[Data]]]:
+    """Load persistent perturbation cache from disk if it exists.
+
+    Returns:
+        Dict mapping dataset index to perturbed Data, or None if cache missing.
+    """
+    cache_path = _get_cache_path(
+        dataset_name, num_train, db_path, max_size, radius, cache_dir
+    )
+    if not os.path.exists(cache_path):
+        return None
+    try:
+        cache = torch.load(cache_path, map_location="cpu")
+        logging.info(
+            f"Loaded CReM perturbation cache from {cache_path} ({len(cache)} entries)"
+        )
+        return cache
+    except Exception as e:
+        logging.warning(f"Failed to load CReM cache from {cache_path}: {e}")
+        return None
+
+
+def save_perturbed_cache(
+    cache: Dict[int, Optional[Data]],
+    dataset_name: str,
+    num_train: int,
+    db_path: str,
+    max_size: int,
+    radius: int,
+    cache_dir: str = "datasets/crem_cache",
+) -> None:
+    """Save perturbation cache to disk atomically."""
+    cache_path = _get_cache_path(
+        dataset_name, num_train, db_path, max_size, radius, cache_dir
+    )
+    os.makedirs(cache_dir, exist_ok=True)
+    tmp_path = cache_path + ".tmp"
+    try:
+        torch.save(cache, tmp_path)
+        os.replace(tmp_path, cache_path)
+        logging.info(
+            f"Saved CReM perturbation cache to {cache_path} ({len(cache)} entries)"
+        )
+    except Exception as e:
+        logging.warning(f"Failed to save CReM cache to {cache_path}: {e}")
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 def scaffold_invariant_perturb(

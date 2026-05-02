@@ -39,8 +39,10 @@ def train_epoch(logger, loader, model, optimizer, scheduler, batch_accumulation)
 
         perturbed_cache = crem_mod.PERTURBED_CACHE
         s = loader.dataset
-        if hasattr(s, "indices") and s.indices is not None:
-            subset_indices = s.indices
+        if hasattr(s, "indices"):
+            idx = s.indices
+            if isinstance(idx, (list, torch.Tensor)):
+                subset_indices = idx
     except Exception:
         pass
 
@@ -74,9 +76,12 @@ def train_epoch(logger, loader, model, optimizer, scheduler, batch_accumulation)
             _true = true.detach().to("cpu", non_blocking=True)
             _pred = pred_score.detach().to("cpu", non_blocking=True)
         # Merge auxiliary pretraining losses (e.g., motif contrastive)
+        custom_losses = {}
         if hasattr(batch, "mani_aux_losses") and batch.mani_aux_losses:
             for aux_name, aux_loss in batch.mani_aux_losses.items():
                 if isinstance(aux_loss, torch.Tensor):
+                    aux_val = aux_loss.detach().cpu().item()
+                    custom_losses[f"pre_{aux_name}"] = aux_val
                     loss = loss + aux_loss
         if hasattr(model, "_consistency_loss") and model._consistency_loss > 0:
             loss = loss + model._consistency_loss
@@ -97,6 +102,7 @@ def train_epoch(logger, loader, model, optimizer, scheduler, batch_accumulation)
             time_used=time.time() - time_start,
             params=cfg.params,
             dataset_name=cfg.dataset.name,
+            **custom_losses,
         )
         time_start = time.time()
 
@@ -187,11 +193,17 @@ def custom_train(loggers, loaders, model, optimizer, scheduler):
 
         if is_eval_epoch(cur_epoch):
             for i in range(1, num_splits):
-                eval_epoch(loggers[i], loaders[i], model, split=split_names[i - 1])
-                perf[i].append(loggers[i].write_epoch(cur_epoch))
+                if len(loaders[i].dataset) > 0:
+                    eval_epoch(loggers[i], loaders[i], model, split=split_names[i - 1])
+                    perf[i].append(loggers[i].write_epoch(cur_epoch))
+                else:
+                    perf[i].append({"loss": float("inf")})
         else:
             for i in range(1, num_splits):
-                perf[i].append(perf[i][-1])
+                if len(perf[i]) == 0:
+                    perf[i].append({"loss": float("inf")})
+                else:
+                    perf[i].append(perf[i][-1])
 
         val_perf = perf[1]
         if cfg.optim.scheduler == "reduce_on_plateau":
@@ -213,22 +225,35 @@ def custom_train(loggers, loaders, model, optimizer, scheduler):
 
         # Log current best stats on eval epoch.
         if is_eval_epoch(cur_epoch):
-            best_epoch = np.array([vp["loss"] for vp in val_perf]).argmin()
+            if len(val_perf) > 0 and val_perf[0].get("loss", float("inf")) != float(
+                "inf"
+            ):
+                best_epoch = np.array([vp["loss"] for vp in val_perf]).argmin()
+            else:
+                # No val data: use train loss for best epoch selection
+                best_epoch = np.array([p["loss"] for p in perf[0]]).argmin()
             best_train = best_val = best_test = ""
             if cfg.metric_best != "auto":
                 # Select again based on val perf of `cfg.metric_best`.
                 m = cfg.metric_best
-                best_epoch = getattr(
-                    np.array([vp[m] for vp in val_perf]), cfg.metric_agg
-                )()
+                if len(val_perf) > 0 and val_perf[0].get("loss", float("inf")) != float(
+                    "inf"
+                ):
+                    best_epoch = getattr(
+                        np.array([vp[m] for vp in val_perf]), cfg.metric_agg
+                    )()
+                else:
+                    best_epoch = getattr(
+                        np.array([p[m] for p in perf[0]]), cfg.metric_agg
+                    )()
                 if m in perf[0][best_epoch]:
                     best_train = f"train_{m}: {perf[0][best_epoch][m]:.4f}"
                 else:
-                    # Note: For some datasets it is too expensive to compute
-                    # the main metric on the training set.
                     best_train = f"train_{m}: {0:.4f}"
-                best_val = f"val_{m}: {perf[1][best_epoch][m]:.4f}"
-                best_test = f"test_{m}: {perf[2][best_epoch][m]:.4f}"
+                if perf[1][best_epoch].get("loss", float("inf")) != float("inf"):
+                    best_val = f"val_{m}: {perf[1][best_epoch][m]:.4f}"
+                if perf[2][best_epoch].get("loss", float("inf")) != float("inf"):
+                    best_test = f"test_{m}: {perf[2][best_epoch][m]:.4f}"
 
                 if cfg.wandb.use:
                     bstats = {"best/epoch": best_epoch}
@@ -252,13 +277,17 @@ def custom_train(loggers, loaders, model, optimizer, scheduler):
                 save_ckpt(model, optimizer, scheduler, cur_epoch)
                 if cfg.train.ckpt_clean:  # Delete old ckpt each time.
                     clean_ckpt()
+            vl = perf[1][best_epoch].get("loss", float("inf"))
+            tl = perf[2][best_epoch].get("loss", float("inf"))
+            val_str = f"{vl:.4f}" if vl != float("inf") else "N/A"
+            test_str = f"{tl:.4f}" if tl != float("inf") else "N/A"
             logging.info(
                 f"> Epoch {cur_epoch}: took {full_epoch_times[-1]:.1f}s "
                 f"(avg {np.mean(full_epoch_times):.1f}s) | "
-                f"Best so far: epoch {best_epoch}\t"
-                f"train_loss: {perf[0][best_epoch]['loss']:.4f} {best_train}\t"
-                f"val_loss: {perf[1][best_epoch]['loss']:.4f} {best_val}\t"
-                f"test_loss: {perf[2][best_epoch]['loss']:.4f} {best_test}"
+                f"Best so far: epoch {best_epoch}	"
+                f"train_loss: {perf[0][best_epoch]['loss']:.4f} {best_train}	"
+                f"val_loss: {val_str} {best_val}	"
+                f"test_loss: {test_str} {best_test}"
             )
             if hasattr(model, "trf_layers"):
                 # Log SAN's gamma parameter values if they are trainable.

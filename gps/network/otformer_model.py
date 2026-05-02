@@ -283,87 +283,140 @@ class OTFormerModel(torch.nn.Module):
         num_graphs = node_batch.max().item() + 1
         edge_graph = node_batch[edge_index[0]]
         keep = torch.ones(edge_index.size(1), dtype=torch.bool, device=device)
-        dropped_pairs_per_graph = {}
-        perturb_b_list, perturb_i_list, perturb_j_list, perturb_y_list = [], [], [], []
-        perturb_type_list = []  # for reconstruct mode: stores original edge types
+        perturb_len_total = 0
+        perturb_tensors = {}  # "b", "i", "j", "y" -> list of tensors
 
         mode = getattr(cfg.otformer.pretrain, "edge_denoise_mode", "random")
         reconstruct_mode = mode == "reconstruct"
         edge_type_mode = mode == "edge_type"
         collect_type_target = reconstruct_mode or edge_type_mode
 
-        # In reconstruct mode, masked edges stay in the graph with attr replaced by
-        # a learnable mask token; we record their original attr as reconstruction target.
         attr_work = edge_attr.clone() if edge_attr is not None else None
+        n_total_nodes = (
+            node_batch.numel()
+        )  # total nodes across all graphs, NOT max graph index
+        global_to_local = torch.full(
+            (n_total_nodes,), -1, device=device, dtype=torch.long
+        )
+        node_counts = torch.zeros(num_graphs, device=device, dtype=torch.long)
+        drop_per_graph = torch.zeros(num_graphs, device=device, dtype=torch.long)
 
         for g in range(num_graphs):
             nodes = (node_batch == g).nonzero(as_tuple=False).flatten()
-            if nodes.numel() < 2:
+            ng = nodes.numel()
+            if ng < 2:
                 continue
+            node_counts[g] = ng
+            global_to_local[nodes] = torch.arange(ng, device=device)
+
+        for g in range(num_graphs):
+            ng = int(node_counts[g].item())
+            if ng < 2:
+                continue
+            nodes = node_batch == g
             mask = edge_graph == g
             eids = mask.nonzero(as_tuple=False).flatten()
-            if eids.numel() == 0:
+            ne = eids.numel()
+            if ne == 0:
                 continue
 
-            # Group directed edges into undirected pairs, so perturbation is
-            # symmetric and supervision matches what is actually masked/removed.
-            pair_to_eids = {}
-            for eid in eids.tolist():
-                s = int(edge_index[0, eid].item())
-                d = int(edge_index[1, eid].item())
-                key = (s, d) if s <= d else (d, s)
-                pair_to_eids.setdefault(key, []).append(eid)
-
-            undirected_pairs = list(pair_to_eids.keys())
-            n_undirected = len(undirected_pairs)
+            # --- Vectorized undirected pair grouping ---
+            src_g = edge_index[0, eids]
+            dst_g = edge_index[1, eids]
+            mn = torch.min(src_g, dst_g)
+            mx = torch.max(src_g, dst_g)
+            pair_key = mn * n_total_nodes + mx
+            sort_idx = torch.argsort(pair_key)
+            sorted_key = pair_key[sort_idx]
+            sorted_eids = eids[sort_idx]
+            _, inv, cnt = torch.unique_consecutive(
+                sorted_key, return_inverse=True, return_counts=True
+            )
+            _cumsum = torch.cat(
+                [
+                    torch.zeros(1, device=device, dtype=torch.long),
+                    torch.cumsum(cnt, dim=0)[:-1],
+                ]
+            )
+            n_undirected = inv.max().item() + 1 if inv.numel() > 0 else 0
             if n_undirected == 0:
                 continue
 
             n_drop = max(1, int(n_undirected * ratio))
             n_drop = min(n_drop, n_undirected)
+            drop_per_graph[g] = int(n_drop)
             perm = torch.randperm(n_undirected, device=device)[:n_drop]
-            drop_pairs = [undirected_pairs[idx] for idx in perm.tolist()]
 
-            dropped_pairs_per_graph[g] = n_drop
-            local_idx = {n.item(): idx for idx, n in enumerate(nodes)}
+            # Collect keep flags and perturb labels in vectorized form
+            drop_flags = torch.zeros(n_undirected, dtype=torch.bool, device=device)
+            drop_flags[perm] = True
+            eid_drop_flags = drop_flags[inv]
 
-            for s, d in drop_pairs:
-                drop_eids = pair_to_eids[(s, d)]
-                if not reconstruct_mode:
-                    keep[drop_eids] = False
-                if reconstruct_mode and edge_attr is not None:
-                    # Replace masked edge attributes with learnable mask token.
-                    attr_work[drop_eids] = self.edge_mask_token.to(attr_work.dtype)
+            if not reconstruct_mode:
+                keep[sorted_eids] = ~eid_drop_flags
+            if reconstruct_mode and edge_attr is not None:
+                attr_work[sorted_eids[eid_drop_flags]] = self.edge_mask_token.to(
+                    attr_work.dtype
+                )
 
-                li, lj = local_idx[s], local_idx[d]
-                edge_type = None
-                if collect_type_target and edge_type_target is not None:
-                    edge_type = int(edge_type_target[drop_eids[0]].item())
-
-                if reconstruct_mode and edge_attr is not None:
-                    # Already masked both directions via drop_eids.
-                    pass
+            # Build perturbation labels for dropped pairs
+            n_pos = n_drop * 2  # bidirectional for non-self-loop, 1 for self-loop
+            b_arr = torch.full((n_pos,), g, device=device, dtype=torch.long)
+            i_arr = torch.zeros(n_pos, device=device, dtype=torch.long)
+            j_arr = torch.zeros(n_pos, device=device, dtype=torch.long)
+            y_arr = torch.ones(n_pos, device=device, dtype=torch.long)
+            pos = 0
+            for p_idx in perm.tolist():
+                start = int(_cumsum[p_idx].item())
+                count = int(cnt[p_idx].item())
+                eid0 = sorted_eids[start].item()
+                s = int(edge_index[0, eid0].item())
+                d = int(edge_index[1, eid0].item())
+                li = int(global_to_local[s].item())
+                lj = int(global_to_local[d].item())
                 if s == d:
-                    perturb_b_list.append(g)
-                    perturb_i_list.append(li)
-                    perturb_j_list.append(lj)
-                    perturb_y_list.append(1)
-                    if edge_type is not None:
-                        perturb_type_list.append(edge_type)
+                    i_arr[pos] = li
+                    j_arr[pos] = lj
+                    pos += 1
                 else:
-                    perturb_b_list.extend([g, g])
-                    perturb_i_list.extend([li, lj])
-                    perturb_j_list.extend([lj, li])
-                    perturb_y_list.extend([1, 1])
-                    if edge_type is not None:
-                        perturb_type_list.extend([edge_type, edge_type])
+                    i_arr[pos] = li
+                    j_arr[pos] = lj
+                    i_arr[pos + 1] = lj
+                    j_arr[pos + 1] = li
+                    pos += 2
+
+            perturb_tensors.setdefault("b", []).append(b_arr[:pos])
+            perturb_tensors.setdefault("i", []).append(i_arr[:pos])
+            perturb_tensors.setdefault("j", []).append(j_arr[:pos])
+            perturb_tensors.setdefault("y", []).append(y_arr[:pos])
+            perturb_len_total += pos
+
+            # Type targets
+            if collect_type_target and edge_type_target is not None:
+                t_arr = torch.zeros(pos, device=device, dtype=torch.long)
+                tp = 0
+                for p_idx in perm.tolist():
+                    start = int(_cumsum[p_idx].item())
+                    eid0 = sorted_eids[start].item()
+                    s = int(edge_index[0, eid0].item())
+                    et = int(edge_type_target[eid0].item())
+                    if s == edge_index[1, eid0].item():
+                        t_arr[tp] = et
+                        tp += 1
+                    else:
+                        t_arr[tp] = et
+                        t_arr[tp + 1] = et
+                        tp += 2
+                perturb_tensors.setdefault("target_type", []).append(t_arr[:tp])
+        # --- End per-graph loop ---
 
         edge_keep = edge_index[:, keep]
         attr_keep = attr_work[keep] if attr_work is not None else None
 
         max_spd = getattr(cfg.otformer.pretrain, "hard_neg_max_spd", 3)
 
-        add_src, add_dst, add_attr = [], [], []
+        add_triplets = []
+        add_attr_list = []
         if edge_attr is not None:
             zero_attr = torch.zeros(
                 edge_attr.size(1), device=device, dtype=edge_attr.dtype
@@ -371,10 +424,24 @@ class OTFormerModel(torch.nn.Module):
 
         if not reconstruct_mode:
             for g in range(num_graphs):
-                nodes = (node_batch == g).nonzero(as_tuple=False).flatten()
-                if nodes.numel() < 2:
+                nodes_t = (node_batch == g).nonzero(as_tuple=False).flatten()
+                if nodes_t.numel() < 2:
                     continue
-                base_add = dropped_pairs_per_graph.get(g, 0)
+                nodes_list = nodes_t.tolist()
+                eids_true = (edge_graph == g).nonzero(as_tuple=False).flatten()
+                true_set = set()
+                for eid in eids_true.tolist():
+                    s = int(edge_index[0, eid].item())
+                    d = int(edge_index[1, eid].item())
+                    true_set.add((s, d) if s <= d else (d, s))
+                keep_graph = edge_graph[keep]
+                eids_keep = (keep_graph == g).nonzero(as_tuple=False).flatten()
+                existing = set()
+                for eid in eids_keep.tolist():
+                    s = int(edge_keep[0, eid].item())
+                    d = int(edge_keep[1, eid].item())
+                    existing.add((s, d) if s <= d else (d, s))
+                base_add = int(drop_per_graph[g].item())
                 target_add = int(base_add * cfg.otformer.pretrain.edge_neg_ratio)
                 if (
                     target_add <= 0
@@ -385,33 +452,13 @@ class OTFormerModel(torch.nn.Module):
                 if target_add == 0:
                     continue
 
-                eids_true = (edge_graph == g).nonzero(as_tuple=False).flatten()
-                true_existing = set()
-                for eid in eids_true.tolist():
-                    s = int(edge_index[0, eid].item())
-                    d = int(edge_index[1, eid].item())
-                    true_existing.add((s, d) if s <= d else (d, s))
-
-                keep_graph = edge_graph[keep]
-                eids_keep = (keep_graph == g).nonzero(as_tuple=False).flatten()
-                existing = set()
-                for eid in eids_keep.tolist():
-                    s = int(edge_keep[0, eid].item())
-                    d = int(edge_keep[1, eid].item())
-                    existing.add((s, d) if s <= d else (d, s))
-
                 if mode == "hard_spd":
                     candidates = self._sample_hard_negatives_spd(
-                        edge_keep,
-                        node_batch,
-                        g,
-                        nodes,
-                        existing | true_existing,
-                        max_spd,
+                        edge_keep, node_batch, g, nodes_t, existing | true_set, max_spd
                     )
                 else:
                     candidates = self._sample_random_negatives(
-                        nodes, existing | true_existing, target_add
+                        nodes_t, existing | true_set, target_add
                     )
 
                 added = 0
@@ -419,49 +466,57 @@ class OTFormerModel(torch.nn.Module):
                     if added >= target_add:
                         break
                     existing.add((s, d) if s <= d else (d, s))
-                    add_src.extend([s, d])
-                    add_dst.extend([d, s])
+                    add_triplets.extend([(s, d), (d, s)])
                     if edge_attr is not None:
-                        add_attr.append(zero_attr.clone())
-                        add_attr.append(zero_attr.clone())
-                    li = int((nodes == s).nonzero().item())
-                    lj = int((nodes == d).nonzero().item())
-                    perturb_b_list.extend([g, g])
-                    perturb_i_list.extend([li, lj])
-                    perturb_j_list.extend([lj, li])
-                    perturb_y_list.extend([0, 0])
+                        add_attr_list.append(zero_attr.clone())
+                        add_attr_list.append(zero_attr.clone())
+                    li = int((nodes_t == s).nonzero().item())
+                    lj = int((nodes_t == d).nonzero().item())
+                    perturb_tensors.setdefault("b", []).append(
+                        torch.tensor([g, g], device=device, dtype=torch.long)
+                    )
+                    perturb_tensors.setdefault("i", []).append(
+                        torch.tensor([li, lj], device=device, dtype=torch.long)
+                    )
+                    perturb_tensors.setdefault("j", []).append(
+                        torch.tensor([lj, li], device=device, dtype=torch.long)
+                    )
+                    perturb_tensors.setdefault("y", []).append(
+                        torch.zeros(2, device=device, dtype=torch.long)
+                    )
+                    perturb_len_total += 2
                     if edge_type_mode:
                         noedge_id = int(getattr(self, "edge_type_noedge_id", 0))
-                        perturb_type_list.extend([noedge_id, noedge_id])
+                        perturb_tensors.setdefault("target_type", []).append(
+                            torch.full((2,), noedge_id, device=device, dtype=torch.long)
+                        )
                     added += 1
 
-        if add_src:
-            add_e = torch.tensor(
-                [add_src, add_dst], device=device, dtype=edge_index.dtype
+        if add_triplets:
+            src_arr = torch.tensor(
+                [t[0] for t in add_triplets], device=device, dtype=torch.long
             )
+            dst_arr = torch.tensor(
+                [t[1] for t in add_triplets], device=device, dtype=torch.long
+            )
+            add_e = torch.stack([src_arr, dst_arr], dim=0)
             edge_corrupt = torch.cat([edge_keep, add_e], dim=1)
-            if edge_attr is not None:
-                add_attr_t = torch.stack(add_attr, dim=0)
+            if edge_attr is not None and add_attr_list:
+                add_attr_t = torch.stack(add_attr_list, dim=0)
                 attr_corrupt = torch.cat([attr_keep, add_attr_t], dim=0)
             else:
-                attr_corrupt = None
+                attr_corrupt = attr_keep
         else:
             edge_corrupt = edge_keep
             attr_corrupt = attr_keep
 
-        if perturb_b_list:
-            pairs = {
-                "b": torch.tensor(perturb_b_list, device=device, dtype=torch.long),
-                "i": torch.tensor(perturb_i_list, device=device, dtype=torch.long),
-                "j": torch.tensor(perturb_j_list, device=device, dtype=torch.long),
-                "y": torch.tensor(perturb_y_list, device=device, dtype=torch.long),
-            }
-            if collect_type_target and perturb_type_list:
-                pairs["target_type"] = torch.tensor(
-                    perturb_type_list, device=device, dtype=torch.long
-                )
-        else:
-            pairs = None
+        pairs = None
+        if perturb_len_total > 0:
+            pairs = {}
+            for k in ("b", "i", "j", "y", "target_type"):
+                vlist = perturb_tensors.get(k)
+                if vlist:
+                    pairs[k] = torch.cat(vlist, dim=0)
         return edge_corrupt, attr_corrupt, pairs
 
     def _sample_hard_negatives_spd(
