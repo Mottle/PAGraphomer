@@ -67,6 +67,13 @@ def set_cfg_otformer(cfg):
     cfg.otformer.pretrain.w_motif_mask = 1.0
     cfg.otformer.pretrain.w_edge_denoise = 1.0
     cfg.otformer.pretrain.w_ot_prior = 0.1
+    cfg.otformer.pretrain.loss_norm = CN()
+    cfg.otformer.pretrain.loss_norm.mode = "fixed"
+    cfg.otformer.pretrain.loss_norm.ema_decay = 0.9
+    cfg.otformer.pretrain.graph_motif = CN()
+    cfg.otformer.pretrain.graph_motif.enable = False
+    cfg.otformer.pretrain.graph_motif.w_graph_to_motif = 1.0
+    cfg.otformer.pretrain.graph_motif.w_motif_to_props = 0.5
 
     cfg.otformer.finetune = CN()
     cfg.otformer.finetune.enable = False

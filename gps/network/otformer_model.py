@@ -4,10 +4,12 @@ from collections import deque
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch_geometric.graphgym.register as register
 from torch_geometric.graphgym.config import cfg
 from torch_geometric.graphgym.models.gnn import GNNPreMP
 from torch_geometric.graphgym.register import register_network
+from torch_geometric.nn import global_add_pool, global_max_pool, global_mean_pool
 from torch_geometric.utils import to_dense_adj
 
 from gps.layer.otformer_layer import OTMotifMemory, OTFormerBlock, build_pair_init
@@ -157,6 +159,12 @@ class OTFormerModel(torch.nn.Module):
 
         self.ce_loss = nn.CrossEntropyLoss()
         self.bce_loss = nn.BCEWithLogitsLoss()
+
+        if getattr(cfg.otformer.pretrain.graph_motif, "enable", False):
+            self.graph_to_motif_head = nn.Linear(
+                dim_h * 2, cfg.otformer.motif.memory_size
+            )
+            self.motif_to_prop_head = nn.Linear(cfg.otformer.motif.memory_size, 2)
 
         if self.recycling_iters == 0 and len(self.blocks) > 0:
             warnings.warn(
@@ -658,6 +666,7 @@ class OTFormerModel(torch.nn.Module):
         if motif_block_mask.any() and transport is not None:
             motif_log_probs = F.log_softmax(motif_logits, dim=-1)
             motif_target = transport.mean(dim=1).detach()
+            motif_target = motif_target / motif_target.sum(dim=-1, keepdim=True)
             losses["motif_mask"] = F.kl_div(
                 motif_log_probs[motif_block_mask],
                 motif_target[motif_block_mask],
@@ -754,10 +763,64 @@ class OTFormerModel(torch.nn.Module):
             losses["ot_prior"] = torch.tensor(0.0, device=device)
         else:
             losses["ot_prior"] = (transport * cost).sum(dim=(1, 2)).mean()
+
+        if (
+            getattr(cfg.otformer.pretrain.graph_motif, "enable", False)
+            and transport is not None
+        ):
+            gmotif_cfg = cfg.otformer.pretrain.graph_motif
+            node_batch_g = batch.batch
+
+            g_sum = global_add_pool(h_out, node_batch_g)
+            g_max = global_max_pool(h_out, node_batch_g)
+            g_feat = torch.cat([g_sum, g_max], dim=-1)
+
+            node_motif_dist = transport.mean(dim=1).detach()
+            node_motif_dist = node_motif_dist / node_motif_dist.sum(
+                dim=-1, keepdim=True
+            )
+            g_motif_dist = global_mean_pool(node_motif_dist, node_batch_g)
+
+            g_motif_pred = self.graph_to_motif_head(g_feat)
+            g_motif_log_probs = F.log_softmax(g_motif_pred, dim=-1)
+            losses["graph_to_motif"] = F.kl_div(
+                g_motif_log_probs, g_motif_dist, reduction="batchmean"
+            )
+
+            g_props_pred = self.motif_to_prop_head(g_motif_dist)
+            num_atoms = global_add_pool(
+                torch.ones(node_batch_g.size(0), device=device, dtype=h_out.dtype),
+                node_batch_g,
+            )
+            num_edges = (
+                global_add_pool(
+                    torch.ones(
+                        batch.edge_index.size(1), device=device, dtype=h_out.dtype
+                    ),
+                    node_batch_g[batch.edge_index[0]],
+                )
+                / 2.0
+            )
+            g_props_target = torch.stack(
+                [torch.log1p(num_atoms), torch.log1p(num_edges)], dim=-1
+            )
+            losses["motif_to_props"] = F.mse_loss(g_props_pred, g_props_target)
+        else:
+            losses["graph_to_motif"] = torch.tensor(0.0, device=device)
+            losses["motif_to_props"] = torch.tensor(0.0, device=device)
+
         return losses
 
     def _losses_by_mode(self, losses):
         mode = cfg.otformer.pretrain.mode
+        zero_gm = {
+            "graph_to_motif": torch.zeros_like(
+                losses.get("graph_to_motif", torch.tensor(0.0))
+            ),
+            "motif_to_props": torch.zeros_like(
+                losses.get("motif_to_props", torch.tensor(0.0))
+            ),
+        }
         if mode == "joint":
             return losses
         if mode == "atom_only":
@@ -766,6 +829,7 @@ class OTFormerModel(torch.nn.Module):
                 "motif_mask": torch.zeros_like(losses["motif_mask"]),
                 "edge_denoise": torch.zeros_like(losses["edge_denoise"]),
                 "ot_prior": torch.zeros_like(losses["ot_prior"]),
+                **zero_gm,
             }
         if mode == "motif_only":
             return {
@@ -773,6 +837,10 @@ class OTFormerModel(torch.nn.Module):
                 "motif_mask": losses["motif_mask"],
                 "edge_denoise": torch.zeros_like(losses["edge_denoise"]),
                 "ot_prior": torch.zeros_like(losses["ot_prior"]),
+                "graph_to_motif": losses.get("graph_to_motif", torch.tensor(0.0)),
+                "motif_to_props": torch.zeros_like(
+                    losses.get("motif_to_props", torch.tensor(0.0))
+                ),
             }
         if mode == "edge_only":
             return {
@@ -780,6 +848,7 @@ class OTFormerModel(torch.nn.Module):
                 "motif_mask": torch.zeros_like(losses["motif_mask"]),
                 "edge_denoise": losses["edge_denoise"],
                 "ot_prior": torch.zeros_like(losses["ot_prior"]),
+                **zero_gm,
             }
         if mode == "no_ot":
             return {
@@ -787,6 +856,7 @@ class OTFormerModel(torch.nn.Module):
                 "motif_mask": losses["motif_mask"],
                 "edge_denoise": losses["edge_denoise"],
                 "ot_prior": torch.zeros_like(losses["ot_prior"]),
+                **zero_gm,
             }
         raise ValueError(
             f"Unsupported otformer.pretrain.mode='{mode}'. "

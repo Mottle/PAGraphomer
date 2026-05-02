@@ -127,6 +127,13 @@ otformer:
     w_motif_mask: 1.0
     w_edge_denoise: 1.0
     w_ot_prior: 0.5
+    loss_norm:
+      mode: ema
+      ema_decay: 0.9
+    graph_motif:
+      enable: True
+      w_graph_to_motif: 1.0
+      w_motif_to_props: 0.5
 gt:
   pna_degrees: []
   bigbird:

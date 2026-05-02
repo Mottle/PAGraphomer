@@ -10,14 +10,52 @@ from torch_geometric.graphgym.config import cfg
 from torch_geometric.graphgym.register import register_train
 from torch_geometric.graphgym.utils.epoch import is_eval_epoch, is_ckpt_epoch
 
+_PRE_LOSS_KEYS = ["mask_atom", "motif_mask", "edge_denoise", "ot_prior"]
+_GM_LOSS_KEYS = ["graph_to_motif", "motif_to_props"]
+
 
 def _joint_pretrain_loss(losses):
-    return (
-        cfg.otformer.pretrain.w_mask_atom * losses["mask_atom"]
-        + cfg.otformer.pretrain.w_motif_mask * losses["motif_mask"]
-        + cfg.otformer.pretrain.w_edge_denoise * losses["edge_denoise"]
-        + cfg.otformer.pretrain.w_ot_prior * losses["ot_prior"]
+    pc = cfg.otformer.pretrain
+    norm_mode = getattr(pc.loss_norm, "mode", "fixed")
+    use_gm = losses.get("graph_to_motif") is not None
+
+    if norm_mode == "ema":
+        if not hasattr(_joint_pretrain_loss, "loss_ema"):
+            _joint_pretrain_loss.loss_ema = {}
+            _joint_pretrain_loss.decay = pc.loss_norm.ema_decay
+        ema = _joint_pretrain_loss.loss_ema
+        decay = _joint_pretrain_loss.decay
+
+        for k in losses:
+            raw_v = losses[k].detach().abs().item()
+            ema[k] = raw_v if k not in ema else decay * ema[k] + (1 - decay) * raw_v
+
+        total = 0.0
+        for k in _PRE_LOSS_KEYS:
+            w = getattr(pc, f"w_{k}")
+            total = total + w * losses[k] / max(ema.get(k, 1.0), 1e-8)
+        if use_gm:
+            gm = pc.graph_motif
+            for k in _GM_LOSS_KEYS:
+                total = total + getattr(gm, f"w_{k}") * losses[k] / max(
+                    ema.get(k, 1.0), 1e-8
+                )
+        return total
+
+    total = (
+        pc.w_mask_atom * losses["mask_atom"]
+        + pc.w_motif_mask * losses["motif_mask"]
+        + pc.w_edge_denoise * losses["edge_denoise"]
+        + pc.w_ot_prior * losses["ot_prior"]
     )
+    if use_gm:
+        gm = pc.graph_motif
+        total = (
+            total
+            + gm.w_graph_to_motif * losses["graph_to_motif"]
+            + gm.w_motif_to_props * losses["motif_to_props"]
+        )
+    return total
 
 
 def _save_epoch_weights_rolling(model, epoch):
@@ -123,6 +161,14 @@ def _train_epoch_pretrain(
             pre_motif_mask=losses["motif_mask"].detach().cpu().item(),
             pre_edge_denoise=losses["edge_denoise"].detach().cpu().item(),
             pre_ot_prior=losses["ot_prior"].detach().cpu().item(),
+            pre_graph_to_motif=losses.get("graph_to_motif", torch.tensor(0.0))
+            .detach()
+            .cpu()
+            .item(),
+            pre_motif_to_props=losses.get("motif_to_props", torch.tensor(0.0))
+            .detach()
+            .cpu()
+            .item(),
         )
         time_start = time.time()
 
@@ -144,6 +190,14 @@ def _eval_epoch_pretrain(logger, loader, model, split="val"):
                 "pre_motif_mask": losses["motif_mask"].detach().cpu().item(),
                 "pre_edge_denoise": losses["edge_denoise"].detach().cpu().item(),
                 "pre_ot_prior": losses["ot_prior"].detach().cpu().item(),
+                "pre_graph_to_motif": losses.get("graph_to_motif", torch.tensor(0.0))
+                .detach()
+                .cpu()
+                .item(),
+                "pre_motif_to_props": losses.get("motif_to_props", torch.tensor(0.0))
+                .detach()
+                .cpu()
+                .item(),
             }
         else:
             loss = torch.tensor(0.0, device=batch.x.device)
