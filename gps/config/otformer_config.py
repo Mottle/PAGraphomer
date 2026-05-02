@@ -24,12 +24,15 @@ def set_cfg_otformer(cfg):
     cfg.otformer.rum.dropout = 0.0
     cfg.otformer.rum.binary = False
     cfg.otformer.rum.output_softmax = True
+    cfg.otformer.rum.consistency_weight = 0.0
 
     cfg.otformer.motif = CN()
     cfg.otformer.motif.memory_size = 64
     cfg.otformer.motif.sinkhorn_eps = 0.1
     cfg.otformer.motif.sinkhorn_iters = 5
     cfg.otformer.motif.log_domain = True
+    cfg.otformer.motif.motif_injection_mode = "add"
+    cfg.otformer.motif.path_agg_mode = "mean"
 
     cfg.otformer.pair = CN()
     cfg.otformer.pair.use_triangle = True
@@ -59,6 +62,7 @@ def set_cfg_otformer(cfg):
     cfg.otformer.pretrain.edge_neg_ratio = 1.0
     cfg.otformer.pretrain.edge_denoise_mode = "hard_spd"
     cfg.otformer.pretrain.hard_neg_max_spd = 3
+    cfg.otformer.pretrain.edge_kept_sample_ratio = 0.0
     cfg.otformer.pretrain.w_mask_atom = 1.0
     cfg.otformer.pretrain.w_motif_mask = 1.0
     cfg.otformer.pretrain.w_edge_denoise = 1.0

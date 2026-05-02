@@ -84,7 +84,7 @@ otformer:
     edge_perturb_ratio: 0.2
     edge_sample_ratio: 0.1
     edge_neg_ratio: 1.0
-    edge_denoise_mode: reconstruct
+    edge_denoise_mode: random
     hard_neg_max_spd: 3
     w_mask_atom: 0.5
     w_motif_mask: 1.0

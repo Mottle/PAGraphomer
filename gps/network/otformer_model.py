@@ -93,10 +93,16 @@ class OTFormerModel(torch.nn.Module):
             binary=cfg.otformer.rum.binary,
             self_supervise=False,
             output_softmax=getattr(cfg.otformer.rum, "output_softmax", True),
+            consistency_weight=getattr(cfg.otformer.rum, "consistency_weight", 0.0),
         )
         self.ot_memory = OTMotifMemory(dim_h, cfg.otformer.motif.memory_size)
         self.motif_to_node = nn.Linear(dim_h, dim_h)
         self.path_to_node = nn.Linear(dim_h, dim_h)
+        injection_mode = getattr(cfg.otformer.motif, "motif_injection_mode", "add")
+        self.motif_injection_mode = injection_mode
+        if injection_mode == "gate":
+            self.motif_gate_net = nn.Linear(dim_h * 3, dim_h)
+        self.path_agg_mode = getattr(cfg.otformer.motif, "path_agg_mode", "mean")
         self.edge_proj = nn.Linear(dim_h, dim_h)
         self.pair_init_proj = nn.Linear(dim_h + 1, dim_z)
         self.use_spd = bool(getattr(cfg.otformer.pair, "use_spd", True))
@@ -649,9 +655,13 @@ class OTFormerModel(torch.nn.Module):
                 losses["mask_atom"] = torch.tensor(0.0, device=device)
 
         motif_logits = self.motif_decoder(h_out)
-        if motif_block_mask.any():
-            losses["motif_mask"] = self.ce_loss(
-                motif_logits[motif_block_mask], motif_id[motif_block_mask]
+        if motif_block_mask.any() and transport is not None:
+            motif_log_probs = F.log_softmax(motif_logits, dim=-1)
+            motif_target = transport.mean(dim=1).detach()
+            losses["motif_mask"] = F.kl_div(
+                motif_log_probs[motif_block_mask],
+                motif_target[motif_block_mask],
+                reduction="batchmean",
             )
         else:
             losses["motif_mask"] = torch.tensor(0.0, device=device)
@@ -718,6 +728,27 @@ class OTFormerModel(torch.nn.Module):
                     losses["edge_denoise"] = self.bce_loss(pred_edge, true_edge)
             else:
                 losses["edge_denoise"] = torch.tensor(0.0, device=device)
+
+        kept_ratio = float(
+            getattr(cfg.otformer.pretrain, "edge_kept_sample_ratio", 0.0)
+        )
+        if kept_ratio > 0 and denoise_mode == "random":
+            true_edge_mask = true_adj_dense > 0.5
+            diag_mask = torch.eye(
+                true_edge_mask.shape[-1], dtype=torch.bool, device=true_edge_mask.device
+            ).unsqueeze(0)
+            kept_mask = true_edge_mask & ~diag_mask
+            kept_idx = kept_mask.nonzero(as_tuple=False)
+            n_kept_total = kept_idx.shape[0]
+            if n_kept_total > 0:
+                n_kept_sample = max(1, int(n_kept_total * kept_ratio))
+                n_kept_sample = min(n_kept_sample, n_kept_total)
+                ks_perm = torch.randperm(n_kept_total, device=device)[:n_kept_sample]
+                ks_idx = kept_idx[ks_perm]
+                pred_kept = edge_pred_dense[ks_idx[:, 0], ks_idx[:, 1], ks_idx[:, 2]]
+                kept_labels = torch.ones(n_kept_sample, device=device)
+                kept_loss = self.bce_loss(pred_kept.squeeze(-1), kept_labels)
+                losses["edge_denoise"] = losses["edge_denoise"] + kept_ratio * kept_loss
 
         if transport is None or cost is None:
             losses["ot_prior"] = torch.tensor(0.0, device=device)
@@ -880,13 +911,31 @@ class OTFormerModel(torch.nn.Module):
         if self.disable_rum_ot:
             h0 = h_input
         else:
-            path_mean = path_repr.mean(dim=1)
+            if self.path_agg_mode == "transport_weighted" and transport is not None:
+                path_per_motif = torch.einsum("nwk,nwd->nkd", transport, path_repr)
+                node_motif_weight = transport.mean(dim=1)
+                path_mean = torch.einsum(
+                    "nkd,nk->nd", path_per_motif, node_motif_weight
+                )
+            else:
+                path_mean = path_repr.mean(dim=1)
             if pretrain_on:
                 path_mean = path_mean.clone()
                 path_mean[mask_union] = self.mask_token.to(path_mean.dtype)
-                path_mean = path_mean.detach()
 
-            h0 = h_input + self.motif_to_node(node_motif) + self.path_to_node(path_mean)
+            node_motif_input = node_motif
+            if pretrain_on:
+                node_motif_input = node_motif.clone()
+                node_motif_input[mask_union] = self.mask_token.to(node_motif.dtype)
+
+            motif_f = self.motif_to_node(node_motif_input)
+            path_f = self.path_to_node(path_mean)
+            if self.motif_injection_mode == "gate":
+                gate_input = torch.cat([h_input, motif_f, path_f], dim=-1)
+                gate = torch.sigmoid(self.motif_gate_net(gate_input))
+                h0 = h_input + gate * (motif_f + path_f)
+            else:
+                h0 = h_input + motif_f + path_f
 
         batch_work.x = h0
         z0, h_dense0, node_mask, rrwp_dense = build_pair_init(

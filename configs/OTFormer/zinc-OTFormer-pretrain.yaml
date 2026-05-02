@@ -73,11 +73,16 @@ otformer:
     # Global motif memory + Sinkhorn OT matching.
     memory_size: 64
     # OT entropy regularization epsilon.
-    sinkhorn_eps: 0.5
+    sinkhorn_eps: 0.2
     # Sinkhorn iterations per forward.
-    sinkhorn_iters: 5
+    sinkhorn_iters: 30
     # Use log-domain Sinkhorn for numerical stability.
     log_domain: True
+    # How to inject motif/path features into node representation.
+    # "add": h0 = h + motif + path; "gate": gated sigmoid modulation
+    motif_injection_mode: gate
+    # Path feature aggregation: "mean" | "transport_weighted"
+    path_agg_mode: transport_weighted
   pair:
     # 2D pair track updates.
     use_triangle: True
@@ -110,9 +115,11 @@ otformer:
     # Edge denoising mode.
     # Options: random | hard_spd | edge_type | reconstruct
     #   reconstruct: mask edges and reconstruct original edge features (GraphMAE-style)
-    edge_denoise_mode: reconstruct
+    edge_denoise_mode: random
     # Max shortest-path distance for hard negative candidates (hard_spd mode only).
     hard_neg_max_spd: 3
+    # Fraction of kept true edges sampled as positive examples for edge decoder.
+    edge_kept_sample_ratio: 0.1
     # Loss weights for joint objective:
     # L = w_mask_atom*L_mask_atom + w_motif_mask*L_motif_mask
     #   + w_edge_denoise*L_edge_denoise + w_ot_prior*L_ot_prior
