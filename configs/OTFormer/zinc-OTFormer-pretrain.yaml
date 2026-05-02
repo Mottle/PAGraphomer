@@ -8,7 +8,7 @@ wandb:
 dataset:
   # ZINC subset: graph-level regression benchmark.
   format: PyG-ZINC
-  name: subset
+  name: full
   task: graph
   task_type: regression
   transductive: False
@@ -158,6 +158,6 @@ optim:
   base_lr: 0.0005
   muon_momentum: 0.95
   muon_adjust_lr_fn: match_rms_adamw
-  max_epoch: 500
+  max_epoch: 50
   scheduler: cosine_with_warmup
-  num_warmup_epochs: 50
+  num_warmup_epochs: 5
