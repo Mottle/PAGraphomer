@@ -128,7 +128,7 @@ otformer:
     w_edge_denoise: 1.0
     w_ot_prior: 0.5
     loss_norm:
-      mode: ema
+      mode: fixed
       ema_decay: 0.9
     graph_motif:
       enable: True
@@ -143,7 +143,7 @@ gnn:
   head: san_graph
   layers_pre_mp: 0
   layers_post_mp: 3
-  dim_inner: 256
+  dim_inner: 128
   batchnorm: True
   act: gelu
   dropout: 0.1

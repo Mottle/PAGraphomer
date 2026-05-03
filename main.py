@@ -229,12 +229,31 @@ if __name__ == "__main__":
         # Set machine learning pipeline
         loaders = create_loader()
         loggers = create_logger()
+        # GraphGym's set_dataset_info uses torch.unique(dataset._data.y)
+        # which breaks for multi-task datasets with NaN labels (MUV, Tox21,
+        # SIDER, Clintox) — each NaN counts as a unique value.
+        # Restore correct dim_out from the dataset.num_tasks metadata.
+        if loaders:
+            ds = loaders[0].dataset
+            if hasattr(ds, "dataset"):
+                ds = ds.dataset
+            if hasattr(ds, "num_tasks") and getattr(ds, "num_tasks", 0) > 1:
+                cfg.share.dim_out = ds.num_tasks
         # GraphGym's create_model reduces dim_out=2 to 1 for classification
         # (binary heuristic, breaks multi-task datasets like Clintox/MUV/SIDER/Tox21).
         # Temporarily override task_type to bypass the heuristic.
         saved_task = cfg.dataset.task_type
-        if saved_task == "classification" and cfg.share.dim_out > 1:
+        if saved_task == "classification" and cfg.share.dim_out > 2:
             cfg.dataset.task_type = "classification_multitask"
+        elif saved_task == "classification" and cfg.share.dim_out == 2 and loaders:
+            # dim_out==2 with classification could be single-task binary
+            # (unique labels [0,1]) or multi-task with 2 tasks (Clintox).
+            # Check num_tasks to distinguish them.
+            ds_ref = loaders[0].dataset
+            if hasattr(ds_ref, "dataset"):
+                ds_ref = ds_ref.dataset
+            if hasattr(ds_ref, "num_tasks") and ds_ref.num_tasks > 1:
+                cfg.dataset.task_type = "classification_multitask"
         model = create_model()
         cfg.dataset.task_type = saved_task
         if cfg.pretrained.dir or cfg.pretrained.weights_path:

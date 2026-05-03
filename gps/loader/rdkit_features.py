@@ -327,9 +327,7 @@ class RDKitFeatureComputer:
             return None, None
 
         try:
-            mol_fp = AllChem.GetMorganFingerprintAsBitVect(
-                mol, radius=2, nBits=fp_dim
-            )
+            mol_fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=fp_dim)
             mol_fp_arr = np.zeros((fp_dim,), dtype=np.float32)
             DataStructs.ConvertToNumpyArray(mol_fp, mol_fp_arr)
 

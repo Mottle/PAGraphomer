@@ -79,7 +79,6 @@ gt:
   pna_degrees: []
   bigbird:
     attention_type: block_sparse
-gnn:
   head: otformer_finetune
   layers_pre_mp: 0
   layers_post_mp: 3

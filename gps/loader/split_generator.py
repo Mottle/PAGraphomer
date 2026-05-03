@@ -28,6 +28,8 @@ def prepare_splits(dataset):
         setup_scaffold_balanced_split(dataset)
     elif split_mode == "motil_scafford_balance":
         setup_motil_scafford_balance_split(dataset)
+    elif split_mode == "molmcl_scaffold":
+        setup_molmcl_scaffold_split(dataset)
     elif split_mode == "random":
         setup_random_split(dataset)
     elif split_mode.startswith("cv-"):
@@ -378,6 +380,92 @@ def setup_motil_scafford_balance_split(dataset):
         len(test_index),
     )
     set_dataset_splits(dataset, [train_index, val_index, test_index])
+
+
+def setup_molmcl_scaffold_split(dataset):
+    """MolMCL-style scaffold split with `balanced=False`.
+
+    Exactly reproduces the split strategy from MolMCL (Wan et al., 2025):
+      - Group molecules by Bemis-Murcko scaffold.
+      - Sort scaffolds descending by size, resolving ties by the smallest
+        index in each group (deterministic).
+      - Fill train, then val, then test sequentially using strict ``>``
+        cutoffs, matching the MolMCL implementation.
+    """
+    if cfg.dataset.task != "graph":
+        raise ValueError("molmcl_scaffold split supports graph-level datasets only")
+
+    try:
+        from rdkit import Chem
+        from rdkit.Chem.Scaffolds import MurckoScaffold
+    except Exception as e:
+        logging.warning(
+            "RDKit is unavailable, cannot compute molmcl_scaffold split. "
+            "Falling back to standard split. Original import error: %s",
+            repr(e),
+        )
+        setup_standard_split(dataset)
+        return
+
+    split_sizes = cfg.dataset.split
+    train_size, val_size, test_size = _resolve_split_sizes(split_sizes, len(dataset))
+    smiles_list = _load_ogbg_mol_smiles(dataset)
+
+    scaffold_to_indices = defaultdict(list)
+    invalid_smiles = []
+    for idx, smiles in enumerate(smiles_list):
+        scaffold, is_invalid = _safe_scaffold_from_smiles(
+            smiles, idx, Chem, MurckoScaffold
+        )
+        if is_invalid:
+            invalid_smiles.append((idx, smiles))
+        scaffold_to_indices[scaffold].append(idx)
+
+    if invalid_smiles:
+        preview = ", ".join([f"{i}:{s}" for i, s in invalid_smiles[:3]])
+        logging.warning(
+            "molmcl_scaffold split encountered %d invalid/unscaffoldable "
+            "SMILES; assigning each to its own scaffold bucket. Examples: %s",
+            len(invalid_smiles),
+            preview,
+        )
+
+    # MolMCL: sort by set size descending, tie-break by first index
+    scaffold_sets = [
+        sorted(indices)
+        for scaffold, indices in sorted(
+            scaffold_to_indices.items(),
+            key=lambda item: (len(item[1]), item[1][0]),
+            reverse=True,
+        )
+    ]
+
+    # MolMCL uses strict > cutoff (not <= train_size)
+    train_cutoff = train_size
+    valid_cutoff = train_size + val_size
+    train_idx, val_idx, test_idx = [], [], []
+
+    random.seed(cfg.seed)
+    # MolMCL does NOT shuffle the scaffold order when balanced=False.
+    # It simply iterates in the sorted order.
+    for scaffold_set in scaffold_sets:
+        if len(train_idx) + len(scaffold_set) > train_cutoff:
+            if len(train_idx) + len(val_idx) + len(scaffold_set) > valid_cutoff:
+                test_idx.extend(scaffold_set)
+            else:
+                val_idx.extend(scaffold_set)
+        else:
+            train_idx.extend(scaffold_set)
+
+    logging.info(
+        "Using molmcl_scaffold split for %s with seed=%d: train=%d, val=%d, test=%d",
+        getattr(dataset, "name", "dataset"),
+        cfg.seed,
+        len(train_idx),
+        len(val_idx),
+        len(test_idx),
+    )
+    set_dataset_splits(dataset, [train_idx, val_idx, test_idx])
 
 
 def setup_standard_split(dataset):
