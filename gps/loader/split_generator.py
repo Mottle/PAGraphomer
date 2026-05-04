@@ -404,12 +404,26 @@ def _load_molmcl_data_smiles(dataset):
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            smiles = None
             if "smiles" in row:
-                smiles_list.append(row["smiles"])
-            else:
-                for k in row:
-                    if k.strip().lower() == "smiles":
-                        smiles_list.append(row[k])
+                smiles = row["smiles"]
+            elif "SMILES" in row:
+                smiles = row["SMILES"]
+            elif "mol" in row:
+                smiles = row["mol"]
+            if smiles is None:
+                for k, v in row.items():
+                    kl = k.strip().lower()
+                    if kl in ("smiles", "mol"):
+                        smiles = v
+                        break
+            if smiles is None and row:
+                first_key = next(iter(row.keys()))
+                first_val = row[first_key]
+                if any(c in first_val for c in "C=NOPF") and len(first_val) > 3:
+                    smiles = first_val
+            if smiles:
+                smiles_list.append(smiles.strip())
 
     if len(smiles_list) == len(dataset):
         logging.info(

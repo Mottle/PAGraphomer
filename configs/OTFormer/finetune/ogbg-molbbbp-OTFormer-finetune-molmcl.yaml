@@ -92,7 +92,7 @@ gnn:
   agg: mean
   normalize_adj: False
 pretrained:
-  dir: results/zinc-OTFormer-pretrain
+  dir: results/zinc-OTFormer-pretrain_o
   weights_path: ""
   reset_prediction_head: True
   load_encoder: True
