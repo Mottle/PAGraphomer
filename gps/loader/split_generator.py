@@ -382,6 +382,56 @@ def setup_motil_scafford_balance_split(dataset):
     set_dataset_splits(dataset, [train_index, val_index, test_index])
 
 
+def _load_molmcl_data_smiles(dataset):
+    """Load SMILES from MolMCL's CSV data files under datasets/molmcl_data/.
+
+    Falls back to OGB mapping if the MolMCL CSV is unavailable or its length
+    does not match the dataset.
+    """
+    name = getattr(dataset, "name", "")
+    csv_name = name.replace("ogbg-mol", "") + ".csv"
+    csv_path = os.path.join("datasets", "molmcl_data", csv_name)
+    if not os.path.isabs(csv_path):
+        csv_path = os.path.join(os.getcwd(), csv_path)
+
+    if not os.path.exists(csv_path):
+        logging.info(
+            "MolMCL CSV not found at %s, falling back to OGB mapping.", csv_path
+        )
+        return _load_ogbg_mol_smiles(dataset)
+
+    smiles_list = []
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if "smiles" in row:
+                smiles_list.append(row["smiles"])
+            else:
+                for k in row:
+                    if k.strip().lower() == "smiles":
+                        smiles_list.append(row[k])
+
+    if len(smiles_list) == len(dataset):
+        logging.info(
+            "Loaded %d SMILES from MolMCL CSV for %s.", len(smiles_list), name
+        )
+        return smiles_list
+
+    if len(smiles_list) > len(dataset):
+        logging.warning(
+            "MolMCL CSV (%d) > dataset (%d) for %s, using first %d entries.",
+            len(smiles_list), len(dataset), name, len(dataset),
+        )
+        return smiles_list[: len(dataset)]
+
+    logging.warning(
+        "MolMCL CSV length (%d) < dataset length (%d) for %s, "
+        "falling back to OGB mapping.",
+        len(smiles_list), len(dataset), name,
+    )
+    return _load_ogbg_mol_smiles(dataset)
+
+
 def setup_molmcl_scaffold_split(dataset):
     """MolMCL-style scaffold split with `balanced=False`.
 
@@ -409,7 +459,7 @@ def setup_molmcl_scaffold_split(dataset):
 
     split_sizes = cfg.dataset.split
     train_size, val_size, test_size = _resolve_split_sizes(split_sizes, len(dataset))
-    smiles_list = _load_ogbg_mol_smiles(dataset)
+    smiles_list = _load_molmcl_data_smiles(dataset)
 
     scaffold_to_indices = defaultdict(list)
     invalid_smiles = []
