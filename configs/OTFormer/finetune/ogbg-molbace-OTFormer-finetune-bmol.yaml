@@ -6,11 +6,11 @@ wandb:
   use: False
 dataset:
   format: OGB
-  name: ogbg-molclintox
+  name: ogbg-molbace
   task: graph
   task_type: classification
   transductive: False
-  split_mode: molmcl_scaffold
+  split_mode: bmol
   split: [0.8, 0.1, 0.1]
   node_encoder: True
   node_encoder_name: Atom

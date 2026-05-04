@@ -85,14 +85,14 @@ gnn:
   head: otformer_finetune
   layers_pre_mp: 0
   layers_post_mp: 3
-  dim_inner: 256
+  dim_inner: 128
   batchnorm: True
   act: gelu
   dropout: 0.5
   agg: mean
   normalize_adj: False
 pretrained:
-  dir: results/zinc-OTFormer-pretrain_o
+  dir: results/zinc-OTFormer-pretrain
   weights_path: ""
   reset_prediction_head: True
   load_encoder: True

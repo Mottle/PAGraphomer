@@ -30,6 +30,8 @@ def prepare_splits(dataset):
         setup_motil_scafford_balance_split(dataset)
     elif split_mode == "molmcl_scaffold":
         setup_molmcl_scaffold_split(dataset)
+    elif split_mode == "bmol":
+        setup_bmol_scaffold_split(dataset)
     elif split_mode == "random":
         setup_random_split(dataset)
     elif split_mode.startswith("cv-"):
@@ -517,6 +519,80 @@ def setup_molmcl_scaffold_split(dataset):
 
     logging.info(
         "Using molmcl_scaffold split for %s with seed=%d: train=%d, val=%d, test=%d",
+        getattr(dataset, "name", "dataset"),
+        cfg.seed,
+        len(train_idx),
+        len(val_idx),
+        len(test_idx),
+    )
+    set_dataset_splits(dataset, [train_idx, val_idx, test_idx])
+
+
+def setup_bmol_scaffold_split(dataset):
+    """Old-style molmcl scaffold split (bmol) — kept as baseline.
+
+    Uses includeChirality=False, assigns invalid SMILES to their own
+    scaffold bucket, and sorts buckets by (len, first_unsorted_index).
+    """
+    if cfg.dataset.task != "graph":
+        raise ValueError("bmol scaffold split supports graph-level datasets only")
+
+    try:
+        from rdkit import Chem
+        from rdkit.Chem.Scaffolds import MurckoScaffold
+    except Exception as e:
+        logging.warning("RDKit unavailable, falling back to standard split. %s", repr(e))
+        setup_standard_split(dataset)
+        return
+
+    split_sizes = cfg.dataset.split
+    train_size, val_size, test_size = _resolve_split_sizes(split_sizes, len(dataset))
+    smiles_list = _load_molmcl_data_smiles(dataset)
+
+    scaffold_to_indices = defaultdict(list)
+    invalid_smiles = []
+    for idx, smiles in enumerate(smiles_list):
+        scaffold, is_invalid = _safe_scaffold_from_smiles(
+            smiles, idx, Chem, MurckoScaffold
+        )
+        if is_invalid:
+            invalid_smiles.append((idx, smiles))
+        scaffold_to_indices[scaffold].append(idx)
+
+    if invalid_smiles:
+        preview = ", ".join([f"{i}:{s}" for i, s in invalid_smiles[:3]])
+        logging.warning(
+            "bmol scaffold split encountered %d invalid/unscaffoldable "
+            "SMILES; assigning each to its own scaffold bucket. Examples: %s",
+            len(invalid_smiles),
+            preview,
+        )
+
+    scaffold_sets = [
+        sorted(indices)
+        for scaffold, indices in sorted(
+            scaffold_to_indices.items(),
+            key=lambda item: (len(item[1]), item[1][0]),
+            reverse=True,
+        )
+    ]
+
+    train_cutoff = train_size
+    valid_cutoff = train_size + val_size
+    train_idx, val_idx, test_idx = [], [], []
+
+    random.seed(cfg.seed)
+    for scaffold_set in scaffold_sets:
+        if len(train_idx) + len(scaffold_set) > train_cutoff:
+            if len(train_idx) + len(val_idx) + len(scaffold_set) > valid_cutoff:
+                test_idx.extend(scaffold_set)
+            else:
+                val_idx.extend(scaffold_set)
+        else:
+            train_idx.extend(scaffold_set)
+
+    logging.info(
+        "Using bmol scaffold split for %s with seed=%d: train=%d, val=%d, test=%d",
         getattr(dataset, "name", "dataset"),
         cfg.seed,
         len(train_idx),
