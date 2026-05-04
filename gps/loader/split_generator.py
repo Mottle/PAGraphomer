@@ -197,7 +197,7 @@ def _load_motil_csv_smiles(dataset):
     return smiles_list
 
 
-def _safe_scaffold_from_smiles(smiles, idx, chem_module, murcko_module):
+def _safe_scaffold_from_smiles(smiles, idx, chem_module, murcko_module, include_chirality=False):
     mol = chem_module.MolFromSmiles(smiles)
     if mol is None:
         mol = chem_module.MolFromSmiles(smiles, sanitize=False)
@@ -206,7 +206,7 @@ def _safe_scaffold_from_smiles(smiles, idx, chem_module, murcko_module):
         return f"__invalid_scaffold_{idx}", True
 
     try:
-        scaffold = murcko_module.MurckoScaffoldSmiles(mol=mol, includeChirality=False)
+        scaffold = murcko_module.MurckoScaffoldSmiles(mol=mol, includeChirality=include_chirality)
     except Exception:
         return f"__invalid_scaffold_{idx}", True
 
@@ -476,29 +476,23 @@ def setup_molmcl_scaffold_split(dataset):
     smiles_list = _load_molmcl_data_smiles(dataset)
 
     scaffold_to_indices = defaultdict(list)
-    invalid_smiles = []
     for idx, smiles in enumerate(smiles_list):
-        scaffold, is_invalid = _safe_scaffold_from_smiles(
-            smiles, idx, Chem, MurckoScaffold
-        )
-        if is_invalid:
-            invalid_smiles.append((idx, smiles))
+        try:
+            scaffold = MurckoScaffold.MurckoScaffoldSmiles(
+                smiles=smiles, includeChirality=True
+            )
+        except Exception:
+            continue
         scaffold_to_indices[scaffold].append(idx)
 
-    if invalid_smiles:
-        preview = ", ".join([f"{i}:{s}" for i, s in invalid_smiles[:3]])
-        logging.warning(
-            "molmcl_scaffold split encountered %d invalid/unscaffoldable "
-            "SMILES; assigning each to its own scaffold bucket. Examples: %s",
-            len(invalid_smiles),
-            preview,
-        )
-
-    # MolMCL: sort by set size descending, tie-break by first index
+    # MolMCL: sort indices within each scaffold, then sort by size desc
+    all_scaffolds = {
+        key: sorted(value) for key, value in scaffold_to_indices.items()
+    }
     scaffold_sets = [
-        sorted(indices)
-        for scaffold, indices in sorted(
-            scaffold_to_indices.items(),
+        scaffold_set
+        for scaffold, scaffold_set in sorted(
+            all_scaffolds.items(),
             key=lambda item: (len(item[1]), item[1][0]),
             reverse=True,
         )
