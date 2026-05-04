@@ -199,7 +199,9 @@ def _load_motil_csv_smiles(dataset):
     return smiles_list
 
 
-def _safe_scaffold_from_smiles(smiles, idx, chem_module, murcko_module, include_chirality=False):
+def _safe_scaffold_from_smiles(
+    smiles, idx, chem_module, murcko_module, include_chirality=False
+):
     mol = chem_module.MolFromSmiles(smiles)
     if mol is None:
         mol = chem_module.MolFromSmiles(smiles, sanitize=False)
@@ -208,7 +210,9 @@ def _safe_scaffold_from_smiles(smiles, idx, chem_module, murcko_module, include_
         return f"__invalid_scaffold_{idx}", True
 
     try:
-        scaffold = murcko_module.MurckoScaffoldSmiles(mol=mol, includeChirality=include_chirality)
+        scaffold = murcko_module.MurckoScaffoldSmiles(
+            mol=mol, includeChirality=include_chirality
+        )
     except Exception:
         return f"__invalid_scaffold_{idx}", True
 
@@ -428,22 +432,25 @@ def _load_molmcl_data_smiles(dataset):
                 smiles_list.append(smiles.strip())
 
     if len(smiles_list) == len(dataset):
-        logging.info(
-            "Loaded %d SMILES from MolMCL CSV for %s.", len(smiles_list), name
-        )
+        logging.info("Loaded %d SMILES from MolMCL CSV for %s.", len(smiles_list), name)
         return smiles_list
 
     if len(smiles_list) > len(dataset):
         logging.warning(
             "MolMCL CSV (%d) > dataset (%d) for %s, using first %d entries.",
-            len(smiles_list), len(dataset), name, len(dataset),
+            len(smiles_list),
+            len(dataset),
+            name,
+            len(dataset),
         )
         return smiles_list[: len(dataset)]
 
     logging.warning(
         "MolMCL CSV length (%d) < dataset length (%d) for %s, "
         "falling back to OGB mapping.",
-        len(smiles_list), len(dataset), name,
+        len(smiles_list),
+        len(dataset),
+        name,
     )
     return _load_ogbg_mol_smiles(dataset)
 
@@ -488,9 +495,7 @@ def setup_molmcl_scaffold_split(dataset):
         scaffold_to_indices[scaffold].append(idx)
 
     # MolMCL: sort indices within each scaffold, then sort by size desc
-    all_scaffolds = {
-        key: sorted(value) for key, value in scaffold_to_indices.items()
-    }
+    all_scaffolds = {key: sorted(value) for key, value in scaffold_to_indices.items()}
     scaffold_sets = [
         scaffold_set
         for scaffold, scaffold_set in sorted(
@@ -541,7 +546,9 @@ def setup_bmol_scaffold_split(dataset):
         from rdkit import Chem
         from rdkit.Chem.Scaffolds import MurckoScaffold
     except Exception as e:
-        logging.warning("RDKit unavailable, falling back to standard split. %s", repr(e))
+        logging.warning(
+            "RDKit unavailable, falling back to standard split. %s", repr(e)
+        )
         setup_standard_split(dataset)
         return
 
