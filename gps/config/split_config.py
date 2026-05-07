@@ -15,6 +15,10 @@ def set_cfg_split(cfg):
     # Choose a particular split to use if multiple splits are available
     cfg.dataset.split_index = 0
 
+    # Random seed used specifically for dataset split generation.
+    # If left unset/negative, fall back to the global cfg.seed.
+    cfg.dataset.split_seed = -1
+
     # Dir to cache cross-validation splits
     cfg.dataset.split_dir = "./splits"
 

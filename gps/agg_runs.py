@@ -90,6 +90,8 @@ def agg_runs(dir, metric_best="auto"):
     """
     results = {"train": None, "val": None, "test": None}
     results_best = {"train": None, "val": None, "test": None}
+    results_last_test = []
+    results_best_test = []
     for seed in os.listdir(dir):
         if is_seed(seed):
             dir_seed = os.path.join(dir, seed)
@@ -109,7 +111,10 @@ def agg_runs(dir, metric_best="auto"):
                 best_epoch = stats_list[
                     eval("performance_np.{}()".format(cfg.metric_agg))
                 ]["epoch"]
-                print(best_epoch)
+                best_test_epoch = stats_list[
+                    eval("performance_np.{}()".format(cfg.metric_agg))
+                ]["epoch"]
+                last_test_epoch = stats_list[-1]["epoch"]
 
             for split in os.listdir(dir_seed):
                 if is_split(split):
@@ -119,7 +124,15 @@ def agg_runs(dir, metric_best="auto"):
                     stats_best = [
                         stats for stats in stats_list if stats["epoch"] == best_epoch
                     ][0]
-                    print(stats_best)
+                    if split == "test":
+                        stats_last = stats_list[-1]
+                        stats_best_test = [
+                            stats
+                            for stats in stats_list
+                            if stats["epoch"] == best_test_epoch
+                        ][0]
+                        results_last_test.append(stats_last)
+                        results_best_test.append(stats_best_test)
                     stats_list = [[stats] for stats in stats_list]
                     if results[split] is None:
                         results[split] = stats_list
@@ -153,6 +166,17 @@ def agg_runs(dir, metric_best="auto"):
         dir_out = os.path.join(dir, "agg", key)
         fname = os.path.join(dir_out, "best.json")
         dict_to_json(value, fname)
+    if results_last_test:
+        dir_out = os.path.join(dir, "agg", "test")
+        dict_to_json(
+            agg_dict_list(results_last_test), os.path.join(dir_out, "last_test.json")
+        )
+    if results_best_test:
+        dir_out = os.path.join(dir, "agg", "test")
+        dict_to_json(
+            agg_dict_list(results_best_test), os.path.join(dir_out, "best_test.json")
+        )
+        # Keep backward compatibility: best.json remains best-val-selected test
     logging.info(
         "Results aggregated across runs saved in {}".format(os.path.join(dir, "agg"))
     )

@@ -96,4 +96,5 @@ def set_cfg_otformer(cfg):
     cfg.otformer.ablation = CN()
     cfg.otformer.ablation.enable = False
     cfg.otformer.ablation.disable_rum_ot = False
+    cfg.otformer.ablation.disable_ot = False
     cfg.otformer.ablation.readout_variant = "full"

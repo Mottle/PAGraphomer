@@ -6,7 +6,7 @@ wandb:
   use: False
 dataset:
   format: OGB
-  name: ogbg-molhiv
+  name: ogbg-molclintox
   task: graph
   task_type: classification
   transductive: False
@@ -21,7 +21,7 @@ dataset:
   edge_encoder_bn: False
 train:
   mode: otformer_finetune
-  batch_size: 12
+  batch_size: 24
   eval_period: 1
   enable_ckpt: True
   ckpt_best: True
@@ -64,7 +64,7 @@ otformer:
   finetune:
     enable: True
     freeze_backbone: True
-    freeze_backbone_epochs: 10
+    freeze_backbone_epochs: 20
     backbone_lr_ratio: 0.05
     train_encoder_when_freeze_backbone: True
     encoder_lr_ratio: 1.0
@@ -75,8 +75,9 @@ otformer:
     asl_gamma_neg: 4.0
     asl_clip: 0.05
   ablation:
-    enable: False
+    enable: True
     disable_rum_ot: False
+    disable_ot: True
     readout_variant: full
 gt:
   pna_degrees: []
@@ -99,11 +100,10 @@ pretrained:
   load_encoder: True
   freeze_main: False
 optim:
-  batch_accumulation: 2
   clip_grad_norm: True
   optimizer: adamW
   weight_decay: 0.05
   base_lr: 0.0001
-  max_epoch: 50
+  max_epoch: 100
   scheduler: cosine_with_warmup
   num_warmup_epochs: 15

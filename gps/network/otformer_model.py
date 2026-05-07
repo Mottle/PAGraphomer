@@ -82,6 +82,9 @@ class OTFormerModel(torch.nn.Module):
         self.disable_rum_ot = bool(
             getattr(cfg.otformer.ablation, "disable_rum_ot", False)
         )
+        self.disable_ot = bool(getattr(cfg.otformer.ablation, "disable_ot", False))
+        if self.disable_rum_ot:
+            self.disable_ot = True
 
         self.rum = RUMModel(
             in_features=dim_h,
@@ -938,16 +941,21 @@ class OTFormerModel(torch.nn.Module):
                 raise RuntimeError(
                     f"Expected 3D path tensor from RUM, got shape {path_repr.shape}"
                 )
-            # RUM returns [W, N, D]
             path_repr = path_repr.transpose(0, 1).contiguous()
 
-            node_motif, transport, cost = self.ot_memory(
-                path_repr,
-                sinkhorn_eps=cfg.otformer.motif.sinkhorn_eps,
-                sinkhorn_iters=cfg.otformer.motif.sinkhorn_iters,
-                log_domain=cfg.otformer.motif.log_domain,
-            )
-            motif_id = transport.mean(dim=1).argmax(dim=-1)
+            if self.disable_ot:
+                node_motif = path_repr.mean(dim=1)
+                transport = None
+                cost = None
+                motif_id = None
+            else:
+                node_motif, transport, cost = self.ot_memory(
+                    path_repr,
+                    sinkhorn_eps=cfg.otformer.motif.sinkhorn_eps,
+                    sinkhorn_iters=cfg.otformer.motif.sinkhorn_iters,
+                    log_domain=cfg.otformer.motif.log_domain,
+                )
+                motif_id = transport.mean(dim=1).argmax(dim=-1)
 
         # Build pretraining masks: atom random mask + motif-connected block mask.
         atom_mask = torch.zeros(
@@ -956,7 +964,7 @@ class OTFormerModel(torch.nn.Module):
         motif_block_mask = torch.zeros_like(atom_mask)
         mask_union = atom_mask | motif_block_mask
         h_input = h_encoded
-        if pretrain_on and not self.disable_rum_ot:
+        if pretrain_on and not self.disable_ot:
             atom_mask = (
                 torch.rand(h_encoded.shape[0], device=h_encoded.device)
                 < cfg.otformer.pretrain.atom_mask_ratio
@@ -969,7 +977,7 @@ class OTFormerModel(torch.nn.Module):
             mask_union = atom_mask | motif_block_mask
             h_input = h_encoded.clone()
             h_input[mask_union] = self.mask_token.to(h_input.dtype)
-        elif pretrain_on and self.disable_rum_ot:
+        elif pretrain_on and self.disable_ot:
             atom_mask = (
                 torch.rand(h_encoded.shape[0], device=h_encoded.device)
                 < cfg.otformer.pretrain.atom_mask_ratio
@@ -978,7 +986,7 @@ class OTFormerModel(torch.nn.Module):
             h_input = h_encoded.clone()
             h_input[mask_union] = self.mask_token.to(h_input.dtype)
 
-        if self.disable_rum_ot:
+        if self.disable_ot:
             h0 = h_input
         else:
             if self.path_agg_mode == "transport_weighted" and transport is not None:

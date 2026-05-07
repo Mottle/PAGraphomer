@@ -111,10 +111,15 @@ class OTFormerFineTuneHead(nn.Module):
             if self.readout_variant == "nohisto":
                 graph_embed = self.fusion(torch.cat([r_h, r_z], dim=-1))
             else:
-                transport = aux["transport"]
-                r_ot = self._compute_ot_readout(transport, batch_vec)
+                transport = aux.get("transport")
+                if transport is None:
+                    r_ot = torch.zeros(
+                        r_h.size(0), self.motif_size, device=r_h.device, dtype=r_h.dtype
+                    )
+                else:
+                    r_ot = self._compute_ot_readout(transport, batch_vec)
+                    aux["motif_hist_graph"] = r_ot
                 graph_embed = self.fusion(torch.cat([r_h, r_z, r_ot], dim=-1))
-                aux["motif_hist_graph"] = r_ot
 
         logits = self.task_head(graph_embed)
         pred = logits

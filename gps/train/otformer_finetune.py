@@ -1,4 +1,5 @@
 import logging
+import os
 import time
 
 import numpy as np
@@ -11,6 +12,23 @@ from torch_geometric.graphgym.utils.epoch import is_eval_epoch, is_ckpt_epoch
 
 from gps.loss.subtoken_prediction_loss import subtoken_cross_entropy
 from gps.utils import cfg_to_dict, flatten_dict, make_wandb_name
+
+
+def _save_weights(last_state, best_val_state=None, best_test_state=None):
+    weight_dir = os.path.join(cfg.run_dir, "weights")
+    os.makedirs(weight_dir, exist_ok=True)
+    torch.save(last_state, os.path.join(weight_dir, "last.pt"))
+    logging.info(f"[*] Saved last weights to {os.path.join(weight_dir, 'last.pt')}")
+    if best_val_state is not None:
+        torch.save(best_val_state, os.path.join(weight_dir, "bestValTest.pt"))
+        logging.info(
+            f"[*] Saved bestValTest weights to {os.path.join(weight_dir, 'bestValTest.pt')}"
+        )
+    if best_test_state is not None:
+        torch.save(best_test_state, os.path.join(weight_dir, "bestTest.pt"))
+        logging.info(
+            f"[*] Saved bestTest weights to {os.path.join(weight_dir, 'bestTest.pt')}"
+        )
 
 
 def _is_prediction_head_param(name):
@@ -228,6 +246,8 @@ def otformer_finetune_train(loggers, loaders, model, optimizer, scheduler):
     num_splits = len(loggers)
     split_names = ["val", "test"]
     perf = [[] for _ in range(num_splits)]
+    best_val_state = None
+    best_test_state = None
 
     for cur_epoch in range(start_epoch, cfg.optim.max_epoch):
         if staged_finetune and cur_epoch == freeze_backbone_epochs:
@@ -277,6 +297,24 @@ def otformer_finetune_train(loggers, loaders, model, optimizer, scheduler):
         if cfg.wandb.use:
             wandb.log(flatten_dict(perf[0][-1]), step=cur_epoch)
 
+        if is_eval_epoch(cur_epoch):
+            metric_vals_val = [vp[cfg.metric_best] for vp in perf[1]]
+            metric_vals_test = [vp[cfg.metric_best] for vp in perf[2]]
+            if cfg.metric_agg == "argmax":
+                best_val_now = np.argmax(metric_vals_val) == len(metric_vals_val) - 1
+                best_test_now = np.argmax(metric_vals_test) == len(metric_vals_test) - 1
+            else:
+                best_val_now = np.argmin(metric_vals_val) == len(metric_vals_val) - 1
+                best_test_now = np.argmin(metric_vals_test) == len(metric_vals_test) - 1
+            if best_val_now:
+                best_val_state = {
+                    k: v.detach().cpu().clone() for k, v in model.state_dict().items()
+                }
+            if best_test_now:
+                best_test_state = {
+                    k: v.detach().cpu().clone() for k, v in model.state_dict().items()
+                }
+
         if cfg.train.enable_ckpt and is_ckpt_epoch(cur_epoch):
             if cfg.train.ckpt_best:
                 metric_vals = [vp[cfg.metric_best] for vp in val_perf]
@@ -305,10 +343,28 @@ def otformer_finetune_train(loggers, loaders, model, optimizer, scheduler):
         else:
             best_epoch = np.array([vp[cfg.metric_best] for vp in val_perf]).argmin()
 
+    best_test_epoch = np.array([vp["loss"] for vp in perf[2]]).argmin()
+    if cfg.metric_best != "auto":
+        if cfg.metric_agg == "argmax":
+            best_test_epoch = np.array([vp[cfg.metric_best] for vp in perf[2]]).argmax()
+        else:
+            best_test_epoch = np.array([vp[cfg.metric_best] for vp in perf[2]]).argmin()
+
+    last_epoch = len(perf[2]) - 1
+
     logging.info(f"[*] Best epoch: {best_epoch}")
+    logging.info(f"[*] BestValTest: {perf[2][best_epoch]}")
+    logging.info(f"[*] LastTest: {perf[2][last_epoch]}")
+    logging.info(f"[*] BestTest: {perf[2][best_test_epoch]}")
     for split_name in split_names:
         idx = split_names.index(split_name) + 1
         logging.info(f"[*] Best {split_name}: {perf[idx][best_epoch]}")
+
+    _save_weights(
+        last_state=model.state_dict(),
+        best_val_state=best_val_state,
+        best_test_state=best_test_state,
+    )
 
     if cfg.wandb.use:
         run.finish()

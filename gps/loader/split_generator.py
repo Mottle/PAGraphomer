@@ -32,6 +32,8 @@ def prepare_splits(dataset):
         setup_molmcl_scaffold_split(dataset)
     elif split_mode == "bmol":
         setup_bmol_scaffold_split(dataset)
+    elif split_mode == "deepchem_scaffold":
+        setup_deepchem_scaffold_split(dataset)
     elif split_mode == "random":
         setup_random_split(dataset)
     elif split_mode.startswith("cv-"):
@@ -43,6 +45,11 @@ def prepare_splits(dataset):
         setup_sliced_split(dataset)
     else:
         raise ValueError(f"Unknown split mode: {split_mode}")
+
+
+def _split_seed():
+    split_seed = getattr(cfg.dataset, "split_seed", -1)
+    return cfg.seed if split_seed is None or int(split_seed) < 0 else int(split_seed)
 
 
 def _resolve_split_sizes(split_sizes, dataset_len):
@@ -225,7 +232,7 @@ def setup_scaffold_balanced_split(dataset):
     Mirrors Chemprop's scaffold_balanced strategy used by MotiL:
     1) Group molecules by Bemis-Murcko scaffold.
     2) Separate large scaffold groups (larger than half val/test target size).
-    3) Shuffle groups with cfg.seed and allocate groups to train, then val, then test.
+    3) Shuffle groups with dataset.split_seed (fallback cfg.seed) and allocate groups to train, then val, then test.
     """
     if cfg.dataset.task != "graph":
         raise ValueError("scaffold_balanced split supports graph-level datasets only")
@@ -278,7 +285,7 @@ def setup_scaffold_balanced_split(dataset):
         else:
             small_index_sets.append(index_set)
 
-    random.seed(cfg.seed)
+    random.seed(_split_seed())
     random.shuffle(big_index_sets)
     random.shuffle(small_index_sets)
     index_sets = big_index_sets + small_index_sets
@@ -297,7 +304,7 @@ def setup_scaffold_balanced_split(dataset):
     logging.info(
         "Using scaffold_balanced split for %s with seed=%d: train=%d, val=%d, test=%d",
         getattr(dataset, "name", "dataset"),
-        cfg.seed,
+        _split_seed(),
         len(train_index),
         len(val_index),
         len(test_index),
@@ -361,7 +368,7 @@ def setup_motil_scafford_balance_split(dataset):
         else:
             small_index_sets.append(index_set)
 
-    random.seed(cfg.seed)
+    random.seed(_split_seed())
     random.shuffle(big_index_sets)
     random.shuffle(small_index_sets)
     index_sets = big_index_sets + small_index_sets
@@ -380,7 +387,7 @@ def setup_motil_scafford_balance_split(dataset):
     logging.info(
         "Using motil_scafford_balance split for %s with seed=%d: train=%d, val=%d, test=%d",
         getattr(dataset, "name", "dataset"),
-        cfg.seed,
+        _split_seed(),
         len(train_index),
         len(val_index),
         len(test_index),
@@ -510,7 +517,7 @@ def setup_molmcl_scaffold_split(dataset):
     valid_cutoff = train_size + val_size
     train_idx, val_idx, test_idx = [], [], []
 
-    random.seed(cfg.seed)
+    random.seed(_split_seed())
     # MolMCL does NOT shuffle the scaffold order when balanced=False.
     # It simply iterates in the sorted order.
     for scaffold_set in scaffold_sets:
@@ -525,7 +532,7 @@ def setup_molmcl_scaffold_split(dataset):
     logging.info(
         "Using molmcl_scaffold split for %s with seed=%d: train=%d, val=%d, test=%d",
         getattr(dataset, "name", "dataset"),
-        cfg.seed,
+        _split_seed(),
         len(train_idx),
         len(val_idx),
         len(test_idx),
@@ -588,7 +595,7 @@ def setup_bmol_scaffold_split(dataset):
     valid_cutoff = train_size + val_size
     train_idx, val_idx, test_idx = [], [], []
 
-    random.seed(cfg.seed)
+    random.seed(_split_seed())
     for scaffold_set in scaffold_sets:
         if len(train_idx) + len(scaffold_set) > train_cutoff:
             if len(train_idx) + len(val_idx) + len(scaffold_set) > valid_cutoff:
@@ -601,7 +608,85 @@ def setup_bmol_scaffold_split(dataset):
     logging.info(
         "Using bmol scaffold split for %s with seed=%d: train=%d, val=%d, test=%d",
         getattr(dataset, "name", "dataset"),
-        cfg.seed,
+        _split_seed(),
+        len(train_idx),
+        len(val_idx),
+        len(test_idx),
+    )
+    set_dataset_splits(dataset, [train_idx, val_idx, test_idx])
+
+
+def setup_deepchem_scaffold_split(dataset):
+    """DeepChem / Mole-BERT style scaffold split with `balanced=False`.
+
+    Reproduces the scaffold split from Mole-BERT (Xia et al., ICLR 2023),
+    which follows the original DeepChem scaffold splitter:
+      - Group molecules by Bemis-Murcko scaffold (includeChirality=True).
+      - Sort scaffolds descending by size, resolving ties by the smallest
+        index in each group (deterministic).
+      - Fill train, then val, then test sequentially using strict ``>``
+        cutoffs, matching the DeepChem implementation.
+    -SMILES are loaded from OGB mapping files (order matches OGB dataset).
+    """
+    if cfg.dataset.task != "graph":
+        raise ValueError("deepchem_scaffold split supports graph-level datasets only")
+
+    try:
+        from rdkit import Chem
+        from rdkit.Chem.Scaffolds import MurckoScaffold
+    except Exception as e:
+        logging.warning(
+            "RDKit is unavailable, cannot compute deepchem_scaffold split. "
+            "Falling back to standard split. Original import error: %s",
+            repr(e),
+        )
+        setup_standard_split(dataset)
+        return
+
+    split_sizes = cfg.dataset.split
+    train_size, val_size, test_size = _resolve_split_sizes(split_sizes, len(dataset))
+    smiles_list = _load_ogbg_mol_smiles(dataset)
+
+    scaffold_to_indices = defaultdict(list)
+    for idx, smiles in enumerate(smiles_list):
+        try:
+            scaffold = MurckoScaffold.MurckoScaffoldSmiles(
+                smiles=smiles, includeChirality=True
+            )
+        except Exception:
+            continue
+        scaffold_to_indices[scaffold].append(idx)
+
+    # DeepChem: sort indices within each scaffold, then sort by size desc
+    all_scaffolds = {key: sorted(value) for key, value in scaffold_to_indices.items()}
+    scaffold_sets = [
+        scaffold_set
+        for scaffold, scaffold_set in sorted(
+            all_scaffolds.items(),
+            key=lambda item: (len(item[1]), item[1][0]),
+            reverse=True,
+        )
+    ]
+
+    # DeepChem uses strict > cutoff (not <=)
+    train_cutoff = train_size
+    valid_cutoff = train_size + val_size
+    train_idx, val_idx, test_idx = [], [], []
+
+    for scaffold_set in scaffold_sets:
+        if len(train_idx) + len(scaffold_set) > train_cutoff:
+            if len(train_idx) + len(val_idx) + len(scaffold_set) > valid_cutoff:
+                test_idx.extend(scaffold_set)
+            else:
+                val_idx.extend(scaffold_set)
+        else:
+            train_idx.extend(scaffold_set)
+
+    logging.info(
+        "Using deepchem_scaffold split for %s with seed=%d: "
+        "train=%d, val=%d, test=%d",
+        getattr(dataset, "name", "dataset"),
+        _split_seed(),
         len(train_idx),
         len(val_idx),
         len(test_idx),
@@ -710,7 +795,7 @@ def setup_random_split(dataset):
         return
 
     train_index, val_test_index = next(
-        ShuffleSplit(train_size=split_ratios[0], random_state=cfg.seed).split(
+        ShuffleSplit(train_size=split_ratios[0], random_state=_split_seed()).split(
             dataset.data.y, dataset.data.y
         )
     )
@@ -737,7 +822,7 @@ def setup_random_split(dataset):
         test_index = np.array([], dtype=np.int64)
     else:
         val_index, test_index = next(
-            ShuffleSplit(train_size=val_test_ratio, random_state=cfg.seed).split(
+            ShuffleSplit(train_size=val_test_ratio, random_state=_split_seed()).split(
                 dataset.data.y[val_test_index], dataset.data.y[val_test_index]
             )
         )

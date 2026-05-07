@@ -228,17 +228,20 @@ if __name__ == "__main__":
         logging.info(f"    Starting now: {datetime.datetime.now()}")
         # Set machine learning pipeline
         loaders = create_loader()
-        loggers = create_logger()
         # GraphGym's set_dataset_info uses torch.unique(dataset._data.y)
         # which breaks for multi-task datasets with NaN labels (MUV, Tox21,
         # SIDER, Clintox) — each NaN counts as a unique value.
-        # Restore correct dim_out from the dataset.num_tasks metadata.
+        # Restore correct dim_out and task_type BEFORE create_logger()+create_model().
         if loaders:
             ds = loaders[0].dataset
             if hasattr(ds, "dataset"):
                 ds = ds.dataset
-            if hasattr(ds, "num_tasks") and getattr(ds, "num_tasks", 0) > 1:
-                cfg.share.dim_out = ds.num_tasks
+            num_tasks = getattr(ds, "num_tasks", 1)
+            if num_tasks > 1:
+                cfg.share.dim_out = num_tasks
+                if cfg.dataset.task_type == "classification":
+                    cfg.dataset.task_type = "classification_multilabel"
+        loggers = create_logger()
         # GraphGym's create_model reduces dim_out=2 to 1 for classification
         # (binary heuristic, breaks multi-task datasets like Clintox/MUV/SIDER/Tox21).
         # Temporarily override task_type to bypass the heuristic.

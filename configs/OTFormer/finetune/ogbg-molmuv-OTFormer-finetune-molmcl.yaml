@@ -1,7 +1,7 @@
 out_dir: results/finetune
 metric_best: auc
 metric_agg: argmax
-seed: 42
+seed: 0
 wandb:
   use: False
 dataset:
@@ -11,6 +11,7 @@ dataset:
   task_type: classification
   transductive: False
   split_mode: molmcl_scaffold
+  split_seed: 42
   split: [0.8, 0.1, 0.1]
   node_encoder: True
   node_encoder_name: Atom
@@ -33,8 +34,8 @@ otformer:
   layers: 6
   num_heads: 4
   dim_z: 128
-  dropout: 0.15
-  attn_dropout: 0.2
+  dropout: 0.1
+  attn_dropout: 0.15
   layer_norm: True
   ffn_activation: gelu
   recycling_iters: 2
@@ -63,14 +64,14 @@ otformer:
   finetune:
     enable: True
     freeze_backbone: True
-    freeze_backbone_epochs: 20
-    backbone_lr_ratio: 0.05
+    freeze_backbone_epochs: 15
+    backbone_lr_ratio: 0.5
     train_encoder_when_freeze_backbone: True
     encoder_lr_ratio: 1.0
     readout_dim: 256
     cls_hidden: 128
     reg_hidden: 128
-    asl_gamma_pos: 1.0
+    asl_gamma_pos: 2.0
     asl_gamma_neg: 4.0
     asl_clip: 0.05
   ablation:
@@ -85,23 +86,24 @@ gnn:
   head: otformer_finetune
   layers_pre_mp: 0
   layers_post_mp: 3
-  dim_inner: 256
+  dim_inner: 128
   batchnorm: True
   act: gelu
-  dropout: 0.5
+  dropout: 0.3
   agg: mean
   normalize_adj: False
 pretrained:
-  dir: results/zinc-OTFormer-pretrain_o
+  dir: results/zinc-OTFormer-pretrain
   weights_path: ""
   reset_prediction_head: True
   load_encoder: True
   freeze_main: False
 optim:
+  batch_accumulation: 2
   clip_grad_norm: True
   optimizer: adamW
-  weight_decay: 0.05
+  weight_decay: 0.001
   base_lr: 0.0001
   max_epoch: 100
   scheduler: cosine_with_warmup
-  num_warmup_epochs: 15
+  num_warmup_epochs: 20

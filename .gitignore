@@ -15,6 +15,7 @@ datasets/motil_micromolecule/*
 !datasets/motil_micromolecule/*.csv
 pretrained/
 results/
+results_o/
 vocprep/benchmark_RELEASE/
 vocprep/voc_viz_files/
 vocprep/VOC/benchmark_RELEASE/

@@ -1,7 +1,7 @@
 out_dir: results/finetune
 metric_best: auc
 metric_agg: argmax
-seed: 42
+seed: 0
 wandb:
   use: False
 dataset:
@@ -11,6 +11,7 @@ dataset:
   task_type: classification
   transductive: False
   split_mode: molmcl_scaffold
+  split_seed: 42
   split: [0.8, 0.1, 0.1]
   node_encoder: True
   node_encoder_name: Atom
@@ -20,7 +21,7 @@ dataset:
   edge_encoder_bn: False
 train:
   mode: otformer_finetune
-  batch_size: 24
+  batch_size: 6
   eval_period: 1
   enable_ckpt: True
   ckpt_best: True
@@ -103,5 +104,6 @@ optim:
   weight_decay: 0.05
   base_lr: 0.0001
   max_epoch: 200
+  batch_accumulation: 4
   scheduler: cosine_with_warmup
   num_warmup_epochs: 15
